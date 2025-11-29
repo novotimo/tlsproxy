@@ -1,9 +1,13 @@
-# tlsproxy
-Event-based TLS proxy server inspired by nginx
+# TLS Proxy
 
-## Installation
+This is an event-based TLS proxy server inspired by nginx.
 
-To install this, you first need to install https://github.com/tlsa/libcyaml. This was built against `libcyaml` 1.4.2. Follow their instructions to install it first.
+## Compiling
+
+To build this, you first need to install https://github.com/tlsa/libcyaml. This was built against `libcyaml` 1.4.2. Follow their instructions to install it first.
+
+Optionally, you can install Doxygen to build the docs, but 
+Next, install Doxygen with 
 
 Then, simply do this:
 

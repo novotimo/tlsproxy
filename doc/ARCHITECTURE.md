@@ -96,6 +96,14 @@ servkey: servkey.pem
 ## put it in here.
 ```
 
+### Documentation
+
+I'll just use Doxygen, maybe make a CI step in GitHub to upload it to GitHub Pages.
+
+### Testing
+
+I'll try to focus on unit testing with CMocka, though I will do performance benchmarking in other ways (TODO: research). https://github.com/tempesta-tech/tls-perf seems to be a good TLS benchmarking tool, though I may not be able to use it as it would probably shut down the connection before the server socket gets a chance to connect to the backend.
+
 
 ## General Code model
 
