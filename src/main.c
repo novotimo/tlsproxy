@@ -1,5 +1,6 @@
 #include "main.h"
 
+#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -18,20 +19,20 @@ int main(int argc, char *argv[]) {
 
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
-        perror_fatal("Couldn't create epoll fd");
+        err(EXIT_FAILURE, "Couldn't create epoll fd");
 
     int listen_sock = socket(AF_INET6, SOCK_STREAM, 0);
     if (listen_sock == -1)
-        perror_fatal("socket");
+        err(EXIT_FAILURE, "socket");
 
     int opt = 1;
     if (setsockopt(listen_sock, SOL_SOCKET,
                    SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
-        perror_fatal("setsockopt");
+        err(EXIT_FAILURE, "setsockopt");
     opt = 0;
     if (setsockopt(listen_sock, IPPROTO_IPV6,
                    IPV6_V6ONLY, &opt, sizeof(opt)))
-        perror_fatal("setsockopt");
+        err(EXIT_FAILURE, "setsockopt");
 
     struct sockaddr_in6 listen_addr;
     memset(&listen_addr, 0, sizeof(listen_addr));
@@ -41,16 +42,16 @@ int main(int argc, char *argv[]) {
 
     if (bind(listen_sock, (struct sockaddr *)&listen_addr,
              sizeof(listen_addr)) < 0)
-        perror_fatal("bind");
+        err(EXIT_FAILURE, "bind");
 
     if (listen(listen_sock, SOMAXCONN) < 0)
-        perror_fatal("listen");
+        err(EXIT_FAILURE, "listen");
     
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = listen_sock;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_sock, &ev) == -1)
-        perror_fatal("epoll_ctl: listen_sock");
+        err(EXIT_FAILURE, "epoll_ctl: listen_sock");
 
     int nfds, conn_sock;
     int sock_flags;
@@ -63,17 +64,17 @@ int main(int argc, char *argv[]) {
             if (events[n].data.fd == listen_sock) {
                 conn_sock = accept(listen_sock, (struct sockaddr *) &addr, &addrlen);
                 if (conn_sock == -1)
-                    perror_fatal("accept");
+                    err(EXIT_FAILURE, "accept");
                 sock_flags = fcntl(conn_sock, F_GETFL);
                 if (sock_flags == -1)
-                    perror_fatal("fcntl: get flags");
+                    err(EXIT_FAILURE, "fcntl: get flags");
                 if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1)
-                    perror_fatal("fcntl: set flags");
+                    err(EXIT_FAILURE, "fcntl: set flags");
 
                 ev.events = EPOLLIN | EPOLLET;
                 ev.data.fd = conn_sock;
                 if (epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock, &ev) == -1)
-                    perror_fatal("epoll_ctl: conn_sock");
+                    err(EXIT_FAILURE, "epoll_ctl: conn_sock");
             } else {
                 echo_respond(events[n].data.fd);
             }
@@ -104,23 +105,6 @@ void echo_respond(int fd) {
         } while (nwritten < nread);
     }
 }
-
-
-void fatal(const char *fmt, ...) {
-    va_list va;
-
-    va_start(va, fmt);
-    vfprintf(stdout, fmt, va);
-    va_end(va);
-
-    exit(EXIT_FAILURE);
-}
-
-void perror_fatal(const char *msg) {
-    perror(msg);
-    exit(EXIT_FAILURE);
-}
-
 
 int init_worker() {
     return(TPX_FAILURE);

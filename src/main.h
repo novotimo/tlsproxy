@@ -30,9 +30,6 @@ typedef struct connection_s {
  * Prototypes
  ********************************************/
 
-void perror_fatal(const char *msg);
-void fatal(const char *fmt, ...);
-
 void echo_respond(int fd);
 
 int init_worker();
