@@ -1,15 +1,22 @@
 # TLS Proxy
 
-This is an event-based TLS proxy server inspired by nginx.
+This is an event-based TLS proxy server inspired by nginx. It is based on `epoll()` and so is currently Linux-only, and I currently don't plan to extend it to similar platforms that provide similar interfaces. I may possibly change my mind.
 
 ## Compiling
 
+### Dependencies:
+
+- OpenSSL 3.x
+- libcyaml
+- Doxygen
+
 To build this, you first need to install https://github.com/tlsa/libcyaml. This was built against `libcyaml` 1.4.2. Follow their instructions to install it first.
 
-Optionally, you can install Doxygen to build the docs, but 
-Next, install Doxygen with 
+Next, install OpenSSL with your package manager. Which version is up to you, but if 3.5.x or higher is available, you get those sweet sweet PQC algorithms to use with TLS 1.3.
 
-Then, simply do this:
+Optionally, you can install Doxygen to build the docs, but that's not strictly required.
+
+Then, simply build with CMake:
 
 ```
 cmake -B build
@@ -20,7 +27,7 @@ This will build everything into the `build/` directory.
 
 ### Caveats
 
-`libcyaml` doesn't use CMake so we assume it's installed under the `/usr/local` prefix. If it isn't, to build this you'll have to point the `IMPORTED_LOCATION` and `INTERFACE_INCLUDE_DIRECTORIES` of the `cyaml` library in `CMakeLists.txt` to your installed libs and includes.
+`libcyaml` doesn't use CMake so our `CMakeLists.txt` assumes it's installed under the `/usr/local` prefix. If it isn't, to build this you'll have to point the `IMPORTED_LOCATION` and `INTERFACE_INCLUDE_DIRECTORIES` of the `cyaml` library in `CMakeLists.txt` to your installed libs and includes.
 
 ## Usage
 
