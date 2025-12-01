@@ -8,6 +8,12 @@
 #include "queue.h"
 
 /*********************************************
+ * Defines
+ ********************************************/
+
+#define TPX_NET_BUFSIZE 16384
+
+/*********************************************
  * Structs
  ********************************************/
 
@@ -35,16 +41,44 @@ typedef struct connection_s {
 
     SSL *ssl_ctx;
 
+    /**
+     * Handle a read operation by reading it (decrypted if needed)
+     * into the read buffer, chunking it, and pushing the chunks to
+     * the queue.
+     */
     void (*handle_read)(struct connection_s *conn);
+    /**
+     * Handle writing, and flushing data when the first write wasn't
+     * enough, encrypting if required.
+     */
     void (*handle_write)(struct connection_s *conn);
-    void (*handle_timeout)(struct connection_s *conn);
-
+    /**
+     * Handle accepting a connection and putting it on another socket.
+     */
+    struct connection_s *(*handle_accept)(struct connection_s *conn);
 } connection_t;
 
 
 /*********************************************
  * Prototypes
  ********************************************/
+/**
+ * @brief Handles all pending events on the connection
+ *
+ * @param conn The connection context
+ * @param events The epoll events ready on the socket
+ */
+void tpx_handle_all(connection_t *conn, int epollfd, uint32_t events);
+
+
+void tpx_handle_read(connection_t *conn);
+void tpx_handle_write(connection_t *conn);
+
+connection_t *tpx_handle_accept(connection_t *conn);
+
+void tpx_handle_read_tls(connection_t *conn);
+void tpx_handle_write_tls(connection_t *conn);
+
 
 /**
  * @brief Makes a connection ctx for a listen socket.

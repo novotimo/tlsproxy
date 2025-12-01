@@ -12,7 +12,6 @@
 
 // Number stolen from nginx
 #define TPX_MAX_EVENTS 100
-#define TPX_NET_BUFSIZE 16384
 
 /*********************************************
  * Prototypes

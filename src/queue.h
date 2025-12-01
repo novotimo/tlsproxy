@@ -1,7 +1,7 @@
 #ifndef __TLSPROXY_QUEUE_H
 #define __TLSPROXY_QUEUE_H
 
-#include "errors.h"
+#include <stdlib.h>
 
 /*********************************************
  * Structs
@@ -9,8 +9,9 @@
 
 /** The buffer queue element */
 typedef struct queue_elem_s {
-    struct chain_link_s *next;
+    struct queue_elem_s *next;
     unsigned char *buf;
+    size_t buflen;
 } queue_elem_t;
 
 /** The buffer queue, as simple as it can be */
@@ -35,8 +36,9 @@ typedef struct queue_s {
  * @param[in/out] queue The queue to insert into.
  * @param[in] buf The buffer to insert into the queue. Don't free this after
  *            insertion. It's expected that this buffer is malloc'd (or NULL).
+ * @param[in] buflen The size of the data in the buffer.
  */
-void tpx_enqueue(queue_t *queue, unsigned char *buf);
+int tpx_enqueue(queue_t *queue, unsigned char *buf, size_t buflen);
 
 /**
  * @brief Takes the first buffer from the queue and deletes it.
@@ -50,7 +52,7 @@ void tpx_enqueue(queue_t *queue, unsigned char *buf);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_dequeue(queue_t *queue, unsigned char **buf);
+int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
 
 /**
  * @brief Gets the first buffer from the queue without deleting it.
@@ -62,7 +64,9 @@ int tpx_dequeue(queue_t *queue, unsigned char **buf);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_peek(queue_t *queue, unsigned char **buf);
+int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
+
+int tpx_empty(queue_t *queue);
 
 
 #endif
