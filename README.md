@@ -41,8 +41,9 @@ Please see the default configuration file in `example/default.yml`.
 ## Milestones/todo list
 
 - [x] Spin up an epoll-driven echo server.
-- [ ] Add a connection context to hold the fd, chain buffers, and read and write callbacks.
+- [x] Add a connection context to hold the fd, chain buffers, and read and write callbacks.
 - [ ] Implement chain buffers and their IO through the read and write callbacks.
+- [ ] Add a way to handle logging in a performant way, printing error messages where they occur but returning simple error codes that the program can deal with easily (not needing to pass error_txt parameters).
 - [ ] Implement config file reading in YAML.
 - [ ] Add TLS functionality to that connection context: add an OpenSSL context and make the handlers work differently depending on if the connection is TLS or not.
 - [ ] Add a small proxy context that can be used to track the state of both sockets, and close one if the other socket closes.
@@ -50,3 +51,4 @@ Please see the default configuration file in `example/default.yml`.
 - [ ] Separate functionality into master and worker processes.
 - [ ] Implement shared memory for TLS connection caches and config updates.
 - [ ] Implement signal handlers for online config update, graceful shutdown, etc.
+- [ ] Implement privilege dropping, privsep, and chroot.

@@ -62,7 +62,8 @@ int main(int argc, char *argv[]) {
             socklen_t addrlen = sizeof(addr);
             memset(&addr, 0, sizeof(addr));
             if (events[n].data.fd == listen_sock) {
-                conn_sock = accept(listen_sock, (struct sockaddr *) &addr, &addrlen);
+                conn_sock = accept(listen_sock, (struct sockaddr *) &addr,
+                                   &addrlen);
                 if (conn_sock == -1)
                     err(EXIT_FAILURE, "accept");
                 sock_flags = fcntl(conn_sock, F_GETFL);
@@ -104,8 +105,4 @@ void echo_respond(int fd) {
             printf("nwritten==%d\n", nwritten);
         } while (nwritten < nread);
     }
-}
-
-int init_worker() {
-    return(TPX_FAILURE);
 }
