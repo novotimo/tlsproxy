@@ -30,6 +30,7 @@ target_link_libraries(tlsproxy OpenSSL::SSL cyaml)
 target_sources(tlsproxy
   PRIVATE
   src/main.c
+  src/config.c
   src/connection.c
   src/queue.c
 )

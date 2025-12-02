@@ -13,10 +13,12 @@ cacerts:
 - intermediate.pem
 servcert: servcert.pem
 servkey: servkey.pem
+# servkeypass: test
 
 ## Alternatively, provide all certs (including server cert) in a single file:
 # cert-chain: chain.pem
 # servkey: servkey.pem
+# servkeypass: test
 ## cacerts and servcert are mutually exclusive with cert-chain.
 
 ## If we implement mTLS:

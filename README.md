@@ -45,7 +45,7 @@ Please see the default configuration file in `example/default.yml`.
 - [x] Implement IO based on `connection_t` and handle their queue buffers.
 - [x] Add a way to handle logging in a performant way, printing error messages where they occur but returning simple error codes that the program can deal with easily (not needing to pass error_txt parameters).
   - Looks like we're only logging errors.
-- [ ] Implement config file reading in YAML.
+- [x] Implement config file reading in YAML.
 - [ ] Add TLS functionality to that connection context: add an OpenSSL context and make the handlers work differently depending on if the connection is TLS or not.
 - [ ] Add a small proxy context that can be used to track the state of both sockets, and close one if the other socket closes.
 - [ ] Work out if I need timeouts, and what for. If so, implement them.

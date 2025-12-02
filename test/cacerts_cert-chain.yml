@@ -1,0 +1,12 @@
+target-ip: localhost
+target-port: 80
+
+listen-ip: 0.0.0.0
+listen-port: 443
+
+cacerts:
+- root.pem
+- intermediate.pem
+cert-chain: chain.pem
+servcert: servcert.pem
+servkey: servkey.pem
