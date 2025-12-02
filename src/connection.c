@@ -18,10 +18,11 @@ void tpx_handle_all(connection_t *conn, int epollfd, uint32_t events) {
     if (0 != (events | EPOLLOUT) && conn->handle_write)
         (conn->handle_write)(conn);
     
-    // We're an accept socket
     if (0 != (events | EPOLLIN) && conn->handle_read) {
+        // We're a connected socket
         (conn->handle_read)(conn);
     } else if (0 != (events | EPOLLIN) && conn->handle_accept) {
+        // We're the listening socket
         connection_t *newconn = (conn->handle_accept)(conn);
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
@@ -32,33 +33,14 @@ void tpx_handle_all(connection_t *conn, int epollfd, uint32_t events) {
     }
 }
 
-void printq(queue_t *queue) {
-    printf("Queue first: %p\n", queue->first);
-    printf("Queue last: %p\n", queue->last);
-
-    queue_elem_t *el;
-    for (el = queue->first; el != NULL; el=el->next) {
-        printf("Elem: %p %lu, next=%p\n", el->buf, el->buflen, el->next);
-    }
-}
-
 void tpx_handle_read(connection_t *conn) {
-    printf("tpx_handle_read\n");
     unsigned char *rdbuf = malloc(TPX_NET_BUFSIZE);
-    printf("got rdbuf=%p\n",rdbuf);
     int nbytes = -1;
     while ((nbytes = read(conn->fd, rdbuf, TPX_NET_BUFSIZE)) > 0) {
-        printf("got nbytes=%d\n",nbytes);
         assert(TPX_NET_BUFSIZE >= nbytes);
-        printf("trying to enqueue this read buffer\n");
-        printq(conn->rw_bufs);
         tpx_enqueue(conn->rw_bufs, rdbuf, nbytes);
-        printf("enqueued this read buffer\n");
-        printq(conn->rw_bufs);
         rdbuf = malloc(TPX_NET_BUFSIZE);
-        printf("malloced the next rdbuf=%p\n", rdbuf);
     }
-    printf("exited, got nbytes=%d, errno=%d\n",nbytes, errno);
     free(rdbuf);
     
     if (nbytes == -1 && errno != EAGAIN) {
@@ -68,11 +50,9 @@ void tpx_handle_read(connection_t *conn) {
 
     if (!tpx_empty(conn->rw_bufs))
         (conn->handle_write)(conn);
-    printf("tpx_handle_read exited\n");
 }
 
 void tpx_handle_write(connection_t *conn) {
-    printf("tpx_handle_write\n");
     unsigned char *wbuf = NULL;
     size_t wbuflen = 0;
 
@@ -80,10 +60,10 @@ void tpx_handle_write(connection_t *conn) {
     for (;;) {
         switch (tpx_peek(conn->rw_bufs, &wbuf, &wbuflen)) {
         case TPX_FAILURE:
-            fprintf(stderr, "tpx_handle_write: The queue @ 0x%p is corrupted\n", conn->rw_bufs);
+            fprintf(stderr, "tpx_handle_write: The queue @ 0x%p is corrupted\n",
+                    conn->rw_bufs);
             return;
         case TPX_EMPTY:
-            printf("tpx_handle_write: queue empty\n");
             return;
         case TPX_SUCCESS:
         default:
@@ -98,7 +78,6 @@ void tpx_handle_write(connection_t *conn) {
             }
             
             if (nsent == -1 && errno == EAGAIN) {
-                printf("tpx_handle_write exiting: EAGAIN\n");
                 return;
             } else if (nsent == -1 && errno != EAGAIN) {
                 perror("tpx_handle_write");

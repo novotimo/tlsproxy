@@ -70,12 +70,12 @@ int check_consistency(queue_t *queue) {
         return TPX_FAILURE;
     }
     if (queue->first && !queue->last) {
-        fprintf(stderr, "Queue corrupt: NULL last element on "
-                "non-empty queue\n");
+        fprintf(stderr,
+                "Queue corrupt: NULL last element on non-empty queue\n");
         return TPX_FAILURE;
     } else if (!queue->first && queue->last) {
-        fprintf(stderr, "Queue corrupt: NULL first element on non-empty"
-                "queue\n");
+        fprintf(stderr,
+                "Queue corrupt: NULL first element on non-empty queue\n");
         return TPX_FAILURE;
     };
     return TPX_SUCCESS;
