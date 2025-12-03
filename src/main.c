@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
 
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
-        err(EXIT_FAILURE, "Couldn't create epoll fd");
+        err(EXIT_FAILURE, "epoll_create1");
 
     connection_t *listener = tpx_create_listener(NULL, 9090);
     
