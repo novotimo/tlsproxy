@@ -35,3 +35,9 @@ target_sources(tlsproxy
   src/queue.c
 )
 
+#target_compile_options(tlsproxy
+#  PRIVATE
+#  "-fsanitize=address")
+#target_link_options(tlsproxy
+#  PRIVATE
+#  "-fsanitize=address")

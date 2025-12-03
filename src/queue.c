@@ -59,6 +59,22 @@ int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen) {
     return TPX_SUCCESS;
 }
 
+int tpx_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen) {
+    if (check_consistency(queue) != TPX_SUCCESS)
+        return TPX_FAILURE;
+
+    if (queue->first == NULL && queue->last == NULL)
+        return TPX_EMPTY;
+    
+    queue_elem_t *elem = queue->last;
+    if (buf)
+        *buf = elem->buf;
+    if (buflen)
+        *buflen = elem->buflen;
+    
+    return TPX_SUCCESS;
+}
+
 int tpx_empty(queue_t *queue) {
     return queue->first == NULL;
 }

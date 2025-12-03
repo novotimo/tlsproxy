@@ -66,6 +66,20 @@ int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
  */
 int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
 
+/**
+ * @brief Peeks the last buffer from the queue.
+ *
+ * This gets a buffer from the end of a queue in O(1) time (we maintain a pointer
+ * to the last element of the queue).
+ * @param[in/out] queue The queue to get the last element of.
+ * @param[out] buf A pointer to fill in with the queue element's buffer pointer.
+ *             NULL is a valid buffer pointer.
+ * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
+ *         empty queue.
+ */
+int tpx_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
+
+
 int tpx_empty(queue_t *queue);
 
 

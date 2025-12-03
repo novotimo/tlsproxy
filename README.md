@@ -46,8 +46,9 @@ Please see the default configuration file in `example/default.yml`.
 - [x] Add a way to handle logging in a performant way, printing error messages where they occur but returning simple error codes that the program can deal with easily (not needing to pass error_txt parameters).
   - Looks like we're only logging errors.
 - [x] Implement config file reading in YAML.
-- [ ] Make the buffer queue fill up a buffer until it's full rather than malloc a new one for each message.
+- [x] Make the buffer queue fill up a buffer until it's full rather than malloc a new one for each message.
 - [ ] Add TLS functionality to that connection context: add an OpenSSL context and make the handlers work differently depending on if the connection is TLS or not.
+- [ ] Optimize connection ctx for memory usage.
 - [ ] Add a small proxy context that can be used to track the state of both sockets, and close one if the other socket closes.
 - [ ] Work out if I need timeouts, and what for. If so, implement them.
 - [ ] Separate functionality into master and worker processes.

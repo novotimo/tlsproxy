@@ -8,18 +8,18 @@
  ********************************************/
 
 struct tpx_config {
-    char *target_ip;
+    const char *target_ip;
     unsigned int target_port;
 
-    char *listen_ip;
+    const char *listen_ip;
     unsigned int listen_port;
 
-    char **cacerts;
+    const char **cacerts;
     unsigned int cacerts_count;
-    char *cert_chain;
-    char *servcert;
-    char *servkey;
-    char *servkeypass;
+    const char *cert_chain;
+    const char *servcert;
+    const char *servkey;
+    const char *servkeypass;
 };
 
 /*********************************************
@@ -27,7 +27,7 @@ struct tpx_config {
  ********************************************/
 
 static const cyaml_schema_value_t cacert_entry = {
-    CYAML_VALUE_STRING(CYAML_FLAG_DEFAULT, char *, 0, CYAML_UNLIMITED),
+    CYAML_VALUE_STRING(CYAML_FLAG_POINTER, char, 0, CYAML_UNLIMITED),
 };
 
 static const cyaml_schema_field_t top_mapping_schema[] = {

@@ -53,10 +53,15 @@ int main(int argc, char *argv[]) {
         err(EXIT_FAILURE, "epoll_ctl: listen_sock");
 
     int nfds;
+    tpx_err_t handle_err = TPX_SUCCESS;
     for (;;) {
         nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
-        for (size_t n=0; n < nfds; ++n)
-            tpx_handle_all(events[n].data.ptr, epollfd, events[n].events);
+        for (size_t n=0; n < nfds; ++n) {
+            handle_err = tpx_handle_all(events[n].data.ptr,
+                                        epollfd, events[n].events);
+            if (handle_err != TPX_SUCCESS)
+                tpx_conn_close(events[n].data.ptr, epollfd);
+        }
     }
     
     return(EXIT_SUCCESS);

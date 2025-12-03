@@ -5,6 +5,7 @@
 
 #include <openssl/ssl.h>
 
+#include "errors.h"
 #include "queue.h"
 
 /*********************************************
@@ -25,8 +26,11 @@ typedef struct connection_s {
         from it in a FIFO manner */
     queue_t *rw_bufs;
     /** The cursor within the first buffer (if not all data could be
-        sent at once) */
-    unsigned int buf_index;
+        sent at once). If it's -1 we need a new buffer. */
+    int read_idx;
+    /** The cursor within the last buffer so that we can resume writing
+        to it. */
+    int write_idx;
 
     /**
      * Different meaning based on socket type.
@@ -36,8 +40,6 @@ typedef struct connection_s {
      * which the connection was accepted.
      */
     struct sockaddr_storage peer_addr;
-    /** Different meaning based on socket type, see peer_addr */
-    unsigned short peer_port;
 
     SSL *ssl_ctx;
 
@@ -46,16 +48,25 @@ typedef struct connection_s {
      * into the read buffer, chunking it, and pushing the chunks to
      * the queue.
      */
-    void (*handle_read)(struct connection_s *conn);
+    tpx_err_t (*handle_read)(struct connection_s *conn);
+    
     /**
      * Handle writing, and flushing data when the first write wasn't
      * enough, encrypting if required.
      */
-    void (*handle_write)(struct connection_s *conn);
+    tpx_err_t (*handle_write)(struct connection_s *conn);
+    
     /**
      * Handle accepting a connection and putting it on another socket.
      */
     struct connection_s *(*handle_accept)(struct connection_s *conn);
+    
+    /**
+     * Handle accepting a connection and putting it on another socket.
+     */
+    void (*handle_close)(struct connection_s *conn);
+    int closed;
+
 } connection_t;
 
 
@@ -68,16 +79,26 @@ typedef struct connection_s {
  * @param conn The connection context
  * @param events The epoll events ready on the socket
  */
-void tpx_handle_all(connection_t *conn, int epollfd, uint32_t events);
+tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events);
 
+/**
+ * @brief Closes the connection.
+ *
+ * Closes the connection, cleaning up the connection using its
+ * close callback, closing sockets, freeing buffers, and removing
+ * the socket from the epoll list.
+ */
+void tpx_conn_close(connection_t *conn, int epollfd);
 
-void tpx_handle_read(connection_t *conn);
-void tpx_handle_write(connection_t *conn);
+tpx_err_t tpx_handle_read(connection_t *conn);
+tpx_err_t tpx_handle_write(connection_t *conn);
+void tpx_handle_close(connection_t *conn);
 
 connection_t *tpx_handle_accept(connection_t *conn);
 
-void tpx_handle_read_tls(connection_t *conn);
-void tpx_handle_write_tls(connection_t *conn);
+tpx_err_t tpx_handle_read_tls(connection_t *conn);
+tpx_err_t tpx_handle_write_tls(connection_t *conn);
+void tpx_handle_close_tls(connection_t *conn);
 
 
 /**
@@ -124,5 +145,6 @@ connection_t *tpx_create_accept(int conn_sock, struct sockaddr *addr,
  */
 connection_t *tpx_create_connect(struct sockaddr *addr,
                                  socklen_t addrlen);
+
 
 #endif
