@@ -80,13 +80,15 @@ tpx_err_t tpx_handle_read(connection_t *conn) {
     // Invariants
     assert(conn->write_idx < TPX_NET_BUFSIZE);
     assert(tpx_empty(conn->rw_bufs) == (conn->write_idx == -1));
-    
+
     if (conn->write_idx == -1) {
+        // Add new chunk
         rdbuf = malloc(TPX_NET_BUFSIZE);
         buflen = TPX_NET_BUFSIZE;
         tpx_enqueue(conn->rw_bufs, rdbuf, buflen);
         conn->write_idx = 0;
     } else {
+        // Use existing chunk
         switch (tpx_peek_last(conn->rw_bufs, &rdbuf, &buflen)) {
         case TPX_FAILURE:
             fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted\n",
@@ -105,7 +107,9 @@ tpx_err_t tpx_handle_read(connection_t *conn) {
 
     
     int nbytes = -1;
-    while ((nbytes = read(conn->fd, rdbuf + conn->write_idx, buflen - conn->write_idx)) > 0) {
+    while (buflen > conn->write_idx &&
+           ((nbytes = read(conn->fd, rdbuf + conn->write_idx,
+                           buflen - conn->write_idx)) > 0)) {
         assert(buflen >= nbytes);
         if (conn->write_idx + nbytes == buflen) {
             rdbuf = malloc(TPX_NET_BUFSIZE);
