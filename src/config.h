@@ -7,7 +7,7 @@
  * Structs
  ********************************************/
 
-struct tpx_config {
+typedef struct tpx_config {
     const char *target_ip;
     unsigned int target_port;
 
@@ -20,7 +20,7 @@ struct tpx_config {
     const char *servcert;
     const char *servkey;
     const char *servkeypass;
-};
+} tpx_config_t;
 
 /*********************************************
  * Globals
@@ -32,44 +32,44 @@ static const cyaml_schema_value_t cacert_entry = {
 
 static const cyaml_schema_field_t top_mapping_schema[] = {
     CYAML_FIELD_STRING_PTR(
-        "target-ip", CYAML_FLAG_POINTER, struct tpx_config, target_ip,
+        "target-ip", CYAML_FLAG_POINTER, tpx_config_t, target_ip,
         0, CYAML_UNLIMITED),
     CYAML_FIELD_UINT(
-        "target-port", CYAML_FLAG_DEFAULT, struct tpx_config, target_port),
+        "target-port", CYAML_FLAG_DEFAULT, tpx_config_t, target_port),
     
     CYAML_FIELD_STRING_PTR(
-        "listen-ip", CYAML_FLAG_POINTER, struct tpx_config, listen_ip,
+        "listen-ip", CYAML_FLAG_POINTER, tpx_config_t, listen_ip,
         0, CYAML_UNLIMITED),
     CYAML_FIELD_UINT(
-        "listen-port", CYAML_FLAG_DEFAULT, struct tpx_config, listen_port),
+        "listen-port", CYAML_FLAG_DEFAULT, tpx_config_t, listen_port),
 
     CYAML_FIELD_SEQUENCE_COUNT(
-        "cacerts", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct tpx_config,
+        "cacerts", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
         cacerts, cacerts_count, &cacert_entry, 0, CYAML_UNLIMITED),
     CYAML_FIELD_STRING_PTR(
-        "cert-chain", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct tpx_config,
+        "cert-chain", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
         cert_chain, 0, CYAML_UNLIMITED),
     CYAML_FIELD_STRING_PTR(
-        "servcert", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct tpx_config, servcert,
+        "servcert", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t, servcert,
         0, CYAML_UNLIMITED),
     CYAML_FIELD_STRING_PTR(
-        "servkey", CYAML_FLAG_POINTER, struct tpx_config, servkey,
+        "servkey", CYAML_FLAG_POINTER, tpx_config_t, servkey,
         0, CYAML_UNLIMITED),
     CYAML_FIELD_STRING_PTR(
-        "servkeypass", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct tpx_config,
+        "servkeypass", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
         servkeypass, 0, CYAML_UNLIMITED),
     CYAML_FIELD_END
 };
 
 static const cyaml_schema_value_t top_schema = {
     CYAML_VALUE_MAPPING(
-        CYAML_FLAG_POINTER, struct tpx_config, top_mapping_schema),
+        CYAML_FLAG_POINTER, tpx_config_t, top_mapping_schema),
 };
 
 /*********************************************
  * Prototypes
  ********************************************/
 
-int tpx_validate_conf(struct tpx_config *config);
+int tpx_validate_conf(tpx_config_t *config);
 
 #endif

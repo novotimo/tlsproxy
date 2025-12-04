@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <openssl/err.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -20,22 +21,26 @@ void debug_conn(connection_t *conn) {
         printf("\tThis is a connected socket\n");
     printf("\tfd=%d\n", conn->fd);
 //    printf("rw_bufs=%p\n", conn->rw_bufs);
-    printf("\tread_idx=%d\n", conn->read_idx);
-    printf("\twrite_idx=%d\n", conn->write_idx);
+//    printf("\tread_idx=%d\n", conn->read_idx);
+//    printf("\twrite_idx=%d\n", conn->write_idx);
 //    printf("peer_addr=...\n");
 //    printf("ssl_ctx=%p\n", conn->ssl_ctx);
 }
 
 int tpx_bufs_empty(connection_t *conn) {
-    if (tpx_empty(conn->rw_bufs))
+    if (tpx_queue_empty(conn->in_bufq) || tpx_queue_empty(conn->out_bufq))
         return 1;
-    if (conn->rw_bufs->first == conn->rw_bufs->last &&
-        conn->read_idx == conn->write_idx)
+    if (conn->in_bufq->first == conn->in_bufq->last &&
+        conn->in_bufq->read_idx == conn->in_bufq->write_idx)
+        return 1;
+    if (conn->out_bufq->first == conn->out_bufq->last &&
+        conn->out_bufq->read_idx == conn->out_bufq->write_idx)
         return 1;
     return 0;
 }
 
-tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events) {
+tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events,
+                         SSL_CTX *ssl_ctx) {
     int ret = TPX_SUCCESS;
     // We want to handle writes first so that the queue doesn't
     // grow as big
@@ -51,8 +56,9 @@ tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events) {
             return ret;
 
     } else if (0 != (events | EPOLLIN) && conn->handle_accept) {
+        queue_t *bufq = tpx_queue_new();
         // We're the listening socket
-        connection_t *newconn = (conn->handle_accept)(conn);
+        connection_t *newconn = (conn->handle_accept)(conn, ssl_ctx, bufq, bufq);
         if (!newconn)
             return TPX_FAILURE;
 
@@ -73,65 +79,76 @@ void tpx_conn_close(connection_t *conn, int epollfd) {
     free(conn);
 }
 
+
 tpx_err_t tpx_handle_read(connection_t *conn) {
     unsigned char *rdbuf = NULL;
     size_t buflen = 0;
 
     // Invariants
-    assert(conn->write_idx < TPX_NET_BUFSIZE);
-    assert(tpx_empty(conn->rw_bufs) == (conn->write_idx == -1));
+    assert(conn->in_bufq->write_idx < TPX_NET_BUFSIZE);
+    assert(tpx_queue_empty(conn->in_bufq) == (conn->in_bufq->write_idx == -1));
 
-    if (conn->write_idx == -1) {
+    if (conn->in_bufq->write_idx == -1) {
         // Add new chunk
         rdbuf = malloc(TPX_NET_BUFSIZE);
         buflen = TPX_NET_BUFSIZE;
-        tpx_enqueue(conn->rw_bufs, rdbuf, buflen);
-        conn->write_idx = 0;
+        tpx_enqueue(conn->in_bufq, rdbuf, buflen);
+        conn->in_bufq->write_idx = 0;
     } else {
         // Use existing chunk
-        switch (tpx_peek_last(conn->rw_bufs, &rdbuf, &buflen)) {
+        switch (tpx_queue_peek_last(conn->in_bufq, &rdbuf, &buflen)) {
         case TPX_FAILURE:
             fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted\n",
-                    conn->rw_bufs);
+                    conn->in_bufq);
             return TPX_FAILURE;
         case TPX_EMPTY:
             fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted: "
-                    "write_idx isn't -1 with an empty queue\n",
-                    conn->rw_bufs);
+                    "in_bufq->write_idx isn't -1 with an empty queue\n",
+                    conn->in_bufq);
             return TPX_FAILURE;
         case TPX_SUCCESS:
         default:
-            assert(conn->write_idx < buflen);
+            assert(conn->in_bufq->write_idx < buflen);
         }
     }
 
     
+    
     int nbytes = -1;
-    while (buflen > conn->write_idx &&
-           ((nbytes = read(conn->fd, rdbuf + conn->write_idx,
-                           buflen - conn->write_idx)) > 0)) {
+    while (buflen > conn->in_bufq->write_idx &&
+           ((nbytes = DO_READ(conn->ssl, conn->fd,
+                              rdbuf + conn->in_bufq->write_idx,
+                              buflen - conn->in_bufq->write_idx)) > 0)) {
         assert(buflen >= nbytes);
-        if (conn->write_idx + nbytes == buflen) {
+        if (conn->in_bufq->write_idx + nbytes == buflen) {
             rdbuf = malloc(TPX_NET_BUFSIZE);
             buflen = TPX_NET_BUFSIZE;
-            tpx_enqueue(conn->rw_bufs, rdbuf, buflen);
-            conn->write_idx = 0;
+            tpx_enqueue(conn->in_bufq, rdbuf, buflen);
+            conn->in_bufq->write_idx = 0;
         } else {
-            conn->write_idx += nbytes;
+            conn->in_bufq->write_idx += nbytes;
         }
     }
 
     // Invariants
-    assert(conn->write_idx < TPX_NET_BUFSIZE);
-    assert(tpx_empty(conn->rw_bufs) == (conn->write_idx == -1));
-    
+    assert(conn->in_bufq->write_idx < TPX_NET_BUFSIZE);
+    assert(tpx_queue_empty(conn->in_bufq) == (conn->in_bufq->write_idx == -1));
+
+    int ssl_err = 0;
+    if (conn->ssl && (ssl_err = SSL_get_error(conn->ssl, nbytes))
+                      != SSL_ERROR_WANT_READ) {
+        ERR_print_errors_fp(stderr);
+        return TPX_CLOSED;
+    }
+
     if (nbytes == -1 && errno != EAGAIN) {
         perror("tpx_handle_read");
         return TPX_CLOSED;
     }
 
-    if (!tpx_bufs_empty(conn))
-        return (conn->handle_write)(conn);
+    if (conn->handle_process)
+        return (conn->handle_process)(conn);
+
     return TPX_SUCCESS;
 }
 
@@ -146,16 +163,16 @@ tpx_err_t tpx_handle_write(connection_t *conn) {
     size_t real_buflen = 0;
     for (;;) {
         // Invariants
-        assert(conn->read_idx < TPX_NET_BUFSIZE);
+        assert(conn->out_bufq->read_idx < TPX_NET_BUFSIZE);
         // If both indices are in the came chunk then read idx can't
         // be after write
-        assert(!((conn->rw_bufs->first == conn->rw_bufs->last) &&
-                 (conn->write_idx < conn->read_idx)));
+        assert(!((conn->out_bufq->first == conn->out_bufq->last) &&
+                 (conn->out_bufq->write_idx < conn->out_bufq->read_idx)));
     
-        switch (tpx_peek(conn->rw_bufs, &wbuf, &wbuflen)) {
+        switch (tpx_queue_peek(conn->out_bufq, &wbuf, &wbuflen)) {
         case TPX_FAILURE:
             fprintf(stderr, "tpx_handle_write: The queue @ 0x%p is corrupted\n",
-                    conn->rw_bufs);
+                    conn->out_bufq);
             return TPX_FAILURE;
         case TPX_EMPTY:
             return TPX_SUCCESS;
@@ -163,25 +180,25 @@ tpx_err_t tpx_handle_write(connection_t *conn) {
         default:
             assert(wbuf);
             // Get only the part of the buf that's got data in it
-            if (conn->rw_bufs->first == conn->rw_bufs->last)
-                real_buflen = conn->write_idx;
+            if (conn->out_bufq->first == conn->out_bufq->last)
+                real_buflen = conn->out_bufq->write_idx;
             else
                 real_buflen = wbuflen;
             
-            while (real_buflen > conn->read_idx &&
-                   (nsent = send(conn->fd, wbuf + conn->read_idx,
-                                 real_buflen - conn->read_idx,
-                                 // I'm not the biggest fan of SIGPIPE
-                                 MSG_NOSIGNAL)) > 0) {
-                conn->read_idx += nsent;
+            while (real_buflen > conn->out_bufq->read_idx &&
+                   (nsent = DO_SEND(conn->ssl, conn->fd,
+                                    wbuf + conn->out_bufq->read_idx,
+                                    real_buflen - conn->out_bufq->read_idx))
+                   > 0) {
+                conn->out_bufq->read_idx += nsent;
             }
 
             // Are we done with this chunk?
-            if (conn->read_idx == wbuflen) {
-                tpx_dequeue(conn->rw_bufs, NULL, NULL);
+            if (conn->out_bufq->read_idx == wbuflen) {
+                tpx_dequeue(conn->out_bufq, NULL, NULL);
                 free(wbuf);
-                conn->read_idx = 0;
-            } else if (conn->read_idx == real_buflen) {
+                conn->out_bufq->read_idx = 0;
+            } else if (conn->out_bufq->read_idx == real_buflen) {
                 // This means wbuflen != real_buflen so we're at the
                 // end of the chunk currently being written
                 return TPX_SUCCESS;
@@ -196,15 +213,21 @@ tpx_err_t tpx_handle_write(connection_t *conn) {
         }
 
         // Invariants
-        assert(conn->read_idx < TPX_NET_BUFSIZE);
+        assert(conn->out_bufq->read_idx < TPX_NET_BUFSIZE);
         // If both indices are in the came chunk then read idx can't
         // be after write
-        assert(!((conn->rw_bufs->first == conn->rw_bufs->last) &&
-                 (conn->write_idx < conn->read_idx)));
+        assert(!((conn->out_bufq->first == conn->out_bufq->last) &&
+                 (conn->out_bufq->write_idx < conn->out_bufq->read_idx)));
     }
 }
 
-connection_t *tpx_handle_accept(connection_t *conn) {
+tpx_err_t tpx_handle_process(connection_t *conn) {
+    // Pretty much makes this an echo server.
+    return tpx_handle_write(conn);
+}
+
+connection_t *tpx_handle_accept(connection_t *conn, SSL_CTX *ctx,
+                                queue_t *in_bufq, queue_t *out_bufq) {
     struct sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
     int conn_sock = accept(conn->fd, (struct sockaddr *) &addr,
@@ -215,23 +238,12 @@ connection_t *tpx_handle_accept(connection_t *conn) {
     }
 
     return tpx_create_accept(conn_sock, (struct sockaddr *)&addr,
-                             addrlen);
+                             addrlen, ctx, in_bufq, out_bufq);
 }
 
 void tpx_handle_close(connection_t *conn) {
     assert(!conn->closed);
-    
     close(conn->fd);
-    unsigned char *buf;
-    if (conn->rw_bufs) {
-        while(!tpx_empty(conn->rw_bufs)) {
-            
-            tpx_dequeue(conn->rw_bufs, &buf, NULL);
-            if (buf) free(buf);
-        }
-        free(conn->rw_bufs);
-    }
-    
     conn->closed = 1;
 }
 
@@ -299,10 +311,9 @@ connection_t *tpx_create_listener(const char *host,
     connection_t *conn = malloc(sizeof(connection_t));
 
     conn->fd = lsock;
-    conn->rw_bufs = NULL;
-    conn->read_idx = 0;
-    conn->write_idx = -1;
-    conn->ssl_ctx = NULL;
+    conn->out_bufq = NULL;
+    conn->in_bufq = NULL;
+    conn->ssl = NULL;
     conn->handle_read = NULL;
     conn->handle_write = NULL;
     conn->handle_accept = &tpx_handle_accept;
@@ -311,7 +322,8 @@ connection_t *tpx_create_listener(const char *host,
 }
 
 connection_t *tpx_create_accept(int conn_sock, struct sockaddr *addr,
-                                socklen_t addrlen) {
+                                socklen_t addrlen, SSL_CTX *ctx,
+                                queue_t *in_bufq, queue_t *out_bufq) {
     int sock_flags;
     if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
         perror("tpx_create_accept: fcntl(GETFL)");
@@ -322,16 +334,31 @@ connection_t *tpx_create_accept(int conn_sock, struct sockaddr *addr,
         return NULL;
     }
 
+    SSL *ssl = SSL_new(ctx);
+    if (ssl == NULL) {
+        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Couldn't create SSL context\n");
+        return NULL;
+    }
+
+    if (SSL_set_fd(ssl, conn_sock) != 1) {
+        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "Couldn't assign socket to SSL context\n");
+        return NULL;
+    }
+
+    SSL_set_accept_state(ssl);
+
     connection_t *conn = malloc(sizeof(connection_t));
 
     conn->fd = conn_sock;
-    conn->rw_bufs = calloc(1, sizeof(queue_t));
-    conn->read_idx = 0;
-    conn->write_idx = -1;
+    conn->in_bufq = in_bufq;
+    conn->out_bufq = out_bufq;
     memcpy(&conn->peer_addr, addr, addrlen);
-    conn->ssl_ctx = NULL;
+    conn->ssl = ssl;
     conn->handle_read = &tpx_handle_read;
     conn->handle_write = &tpx_handle_write;
+    conn->handle_process = &tpx_handle_process;
     conn->handle_close = &tpx_handle_close;
     conn->closed = 0;
     

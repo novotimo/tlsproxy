@@ -1,9 +1,9 @@
 #ifndef __TLSPROXY_CONNECTION_H
 #define __TLSPROXY_CONNECTION_H
 
-#include <sys/socket.h>
-
 #include <openssl/ssl.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "errors.h"
 #include "queue.h"
@@ -14,6 +14,12 @@
 
 #define TPX_NET_BUFSIZE 16384
 
+#define DO_READ(ssl, fd, buf, bufsize) \
+    ssl ? SSL_read(ssl,buf,bufsize) : read(fd,buf,bufsize)
+
+#define DO_SEND(ssl, fd, buf, bufsize) \
+    ssl ? SSL_write(ssl,buf,bufsize) :send(fd,buf,bufsize,0)
+
 /*********************************************
  * Structs
  ********************************************/
@@ -22,15 +28,12 @@
 typedef struct connection_s {
     int fd;
 
-    /** The read-write buffer: data is read into this and then written
-        from it in a FIFO manner */
-    queue_t *rw_bufs;
-    /** The cursor within the first buffer (if not all data could be
-        sent at once). If it's -1 we need a new buffer. */
-    int read_idx;
-    /** The cursor within the last buffer so that we can resume writing
-        to it. */
-    int write_idx;
+    /** The buffer queue for data coming in from the peer. */
+    queue_t *in_bufq;
+
+    /** The buffer queue for data to write to the peer. Can be the same ptr as the
+        in_bufq */
+    queue_t *out_bufq;
 
     /**
      * Different meaning based on socket type.
@@ -41,7 +44,7 @@ typedef struct connection_s {
      */
     struct sockaddr_storage peer_addr;
 
-    SSL *ssl_ctx;
+    SSL *ssl;
 
     /**
      * Handle a read operation by reading it (decrypted if needed)
@@ -57,9 +60,16 @@ typedef struct connection_s {
     tpx_err_t (*handle_write)(struct connection_s *conn);
     
     /**
+     * Process the data received
+     */
+    tpx_err_t (*handle_process)(struct connection_s *conn);
+    
+    /**
      * Handle accepting a connection and putting it on another socket.
      */
-    struct connection_s *(*handle_accept)(struct connection_s *conn);
+    struct connection_s *(*handle_accept)(struct connection_s *conn,
+                                          SSL_CTX *ssl_ctx,
+                                          queue_t *in_bufq, queue_t *out_bufq);
     
     /**
      * Handle accepting a connection and putting it on another socket.
@@ -79,7 +89,8 @@ typedef struct connection_s {
  * @param conn The connection context
  * @param events The epoll events ready on the socket
  */
-tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events);
+tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events,
+                         SSL_CTX *ssl_ctx);
 
 /**
  * @brief Closes the connection.
@@ -92,13 +103,17 @@ void tpx_conn_close(connection_t *conn, int epollfd);
 
 tpx_err_t tpx_handle_read(connection_t *conn);
 tpx_err_t tpx_handle_write(connection_t *conn);
+tpx_err_t tpx_handle_process(connection_t *conn);
 void tpx_handle_close(connection_t *conn);
 
-connection_t *tpx_handle_accept(connection_t *conn);
-
-tpx_err_t tpx_handle_read_tls(connection_t *conn);
-tpx_err_t tpx_handle_write_tls(connection_t *conn);
-void tpx_handle_close_tls(connection_t *conn);
+/**
+ * @brief Accepts a TLS connection.
+ *
+ * @param in_bufq The buffer queue for data accepted from the client.
+ * @param out_bufq The buffer queue for data to send to the client.
+ */
+connection_t *tpx_handle_accept(connection_t *conn, SSL_CTX *ssl_ctx,
+                                queue_t *in_bufq, queue_t *out_bufq);
 
 
 /**
@@ -129,7 +144,8 @@ connection_t *tpx_create_listener(const char *host,
  * @return The connection context created.
  */
 connection_t *tpx_create_accept(int conn_sock, struct sockaddr *addr,
-                                socklen_t addrlen);
+                                socklen_t addrlen, SSL_CTX *ctx,
+                                queue_t *in_bufq, queue_t *out_bufq);
 
 /**
  * @brief Makes a connection ctx for a connect socket.

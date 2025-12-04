@@ -18,6 +18,8 @@ typedef struct queue_elem_s {
 typedef struct queue_s {
     queue_elem_t *first;
     queue_elem_t *last;
+    int read_idx;
+    int write_idx;
 } queue_t;
 
 
@@ -64,7 +66,7 @@ int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
+int tpx_queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
 
 /**
  * @brief Peeks the last buffer from the queue.
@@ -77,10 +79,13 @@ int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
+int tpx_queue_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
 
 
-int tpx_empty(queue_t *queue);
+int tpx_queue_empty(queue_t *queue);
+
+queue_t *tpx_queue_new();
+void tpx_queue_free(queue_t *queue);
 
 
 #endif

@@ -1,19 +1,19 @@
 ## Connection details of the backend server
 target-ip: localhost
-target-port: 80
+target-port: 8080
 
 ## The proxy will accept connections on <listen-ip>:<listen-port>
 ## 0.0.0.0 means listen on every interface
 listen-ip: 0.0.0.0
-listen-port: 443
+listen-port: 8443
 
 ## The certificate chain offered to clients
 cacerts:
-- root.pem
-- intermediate.pem
+- cacert.pem
+- intcert.pem
 servcert: servcert.pem
 servkey: servkey.pem
-# servkeypass: test
+servkeypass: test
 
 ## Alternatively, provide all certs (including server cert) in a single file:
 # cert-chain: chain.pem

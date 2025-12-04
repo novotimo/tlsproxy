@@ -26,7 +26,7 @@ endif(DOXYGEN_FOUND)
 
 add_executable(tlsproxy)
 
-target_link_libraries(tlsproxy OpenSSL::SSL cyaml)
+target_link_libraries(tlsproxy OpenSSL::SSL OpenSSL::Crypto cyaml)
 target_sources(tlsproxy
   PRIVATE
   src/main.c

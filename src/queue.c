@@ -6,6 +6,7 @@
 
 int check_consistency(queue_t *queue);
 
+
 int tpx_enqueue(queue_t *queue, unsigned char *buf, size_t buflen) {
     if (check_consistency(queue) != TPX_SUCCESS)
         return TPX_FAILURE;
@@ -32,7 +33,10 @@ int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen) {
     
     queue_elem_t *elem = queue->first;
     queue->first = elem->next;
-    if (!queue->first) queue->last = NULL;
+    if (!queue->first) {
+        queue->last = NULL;
+        queue->read_idx = -1;
+    }
     
     if (buf)
         *buf = elem->buf;
@@ -43,7 +47,7 @@ int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen) {
     return TPX_SUCCESS;
 }
 
-int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen) {
+int tpx_queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen) {
     if (check_consistency(queue) != TPX_SUCCESS)
         return TPX_FAILURE;
 
@@ -59,7 +63,7 @@ int tpx_peek(queue_t *queue, unsigned char **buf, size_t *buflen) {
     return TPX_SUCCESS;
 }
 
-int tpx_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen) {
+int tpx_queue_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen) {
     if (check_consistency(queue) != TPX_SUCCESS)
         return TPX_FAILURE;
 
@@ -75,10 +79,9 @@ int tpx_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen) {
     return TPX_SUCCESS;
 }
 
-int tpx_empty(queue_t *queue) {
+int tpx_queue_empty(queue_t *queue) {
     return queue->first == NULL;
 }
-
 
 int check_consistency(queue_t *queue) {
     if (!queue) {
@@ -95,4 +98,21 @@ int check_consistency(queue_t *queue) {
         return TPX_FAILURE;
     };
     return TPX_SUCCESS;
+}
+
+queue_t *tpx_queue_new() {
+    queue_t *q = calloc(1, sizeof(queue_t));
+    q->write_idx = -1;
+    return q;
+}
+
+void tpx_queue_free(queue_t *queue) {
+    if (queue) {
+        unsigned char *buf;
+        while(!tpx_queue_empty(queue)) {
+            tpx_dequeue(queue, &buf, NULL);
+            if (buf) free(buf);
+        }
+        free(queue);
+    }
 }

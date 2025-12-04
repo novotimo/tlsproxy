@@ -47,7 +47,7 @@ Please see the default configuration file in `example/default.yml`.
   - Looks like we're only logging errors.
 - [x] Implement config file reading in YAML.
 - [x] Make the buffer queue fill up a buffer until it's full rather than malloc a new one for each message.
-- [ ] Add TLS functionality to that connection context: add an OpenSSL context and make the handlers work differently depending on if the connection is TLS or not.
+- [x] Add TLS functionality to that connection context: add an OpenSSL context and make the handlers work differently depending on if the connection is TLS or not.
 - [ ] Optimize connection ctx for memory usage.
 - [ ] Add a small proxy context that can be used to track the state of both sockets, and close one if the other socket closes.
 - [ ] Work out if I need timeouts, and what for. If so, implement them.
