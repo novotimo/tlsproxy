@@ -21,8 +21,19 @@
     ssl ? SSL_write(ssl,buf,bufsize) :send(fd,buf,bufsize,0)
 
 /*********************************************
- * Structs
+ * Enums and structs
  ********************************************/
+
+struct proxy_s;
+
+typedef enum conn_state {
+    CS_LISTENING,
+    CS_CONNECTING,
+    CS_CONNECTED,
+    CS_CLOSING,
+    CS_DONE,
+    CS_CLOSED
+} conn_state_t;
 
 /** Connection context wrapping a single socket with optional TLS */
 typedef struct connection_s {
@@ -43,6 +54,7 @@ typedef struct connection_s {
      * which the connection was accepted.
      */
     struct sockaddr_storage peer_addr;
+    socklen_t peer_addrlen;
 
     SSL *ssl;
 
@@ -63,6 +75,11 @@ typedef struct connection_s {
      * Process the data received
      */
     tpx_err_t (*handle_process)(struct connection_s *conn);
+
+    /**
+     * Process the data received
+     */
+    tpx_err_t (*handle_connect)(struct connection_s *conn);
     
     /**
      * Handle accepting a connection and putting it on another socket.
@@ -75,7 +92,9 @@ typedef struct connection_s {
      * Handle accepting a connection and putting it on another socket.
      */
     void (*handle_close)(struct connection_s *conn);
-    int closed;
+    conn_state_t state;
+
+    struct proxy_s *proxy;
 
 } connection_t;
 
@@ -159,8 +178,9 @@ connection_t *tpx_create_accept(int conn_sock, struct sockaddr *addr,
  * @param addr A pointer to the socket address to connect to.
  * @param
  */
-connection_t *tpx_create_connect(struct sockaddr *addr,
-                                 socklen_t addrlen);
+connection_t *tpx_create_connect(struct sockaddr *addr, socklen_t addrlen,
+                                 queue_t *in_bufq, queue_t *out_bufq);
 
+tpx_err_t tpx_conn_shutdown(connection_t *conn);
 
 #endif

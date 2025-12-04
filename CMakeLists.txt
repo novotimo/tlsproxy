@@ -32,6 +32,7 @@ target_sources(tlsproxy
   src/main.c
   src/config.c
   src/connection.c
+  src/proxy.c
   src/queue.c
 )
 

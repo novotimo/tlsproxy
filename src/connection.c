@@ -1,5 +1,6 @@
 #include "connection.h"
 
+#include <arpa/inet.h>
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
@@ -13,28 +14,20 @@
 
 #include "errors.h"
 
-void debug_conn(connection_t *conn) {
-    printf("Connection info (%p):\n", conn);
-    if (conn->handle_accept)
-        printf("\tThis is a listen socket\n");
-    else
-        printf("\tThis is a connected socket\n");
-    printf("\tfd=%d\n", conn->fd);
-//    printf("rw_bufs=%p\n", conn->rw_bufs);
-//    printf("\tread_idx=%d\n", conn->read_idx);
-//    printf("\twrite_idx=%d\n", conn->write_idx);
-//    printf("peer_addr=...\n");
-//    printf("ssl_ctx=%p\n", conn->ssl_ctx);
-}
-
-int tpx_bufs_empty(connection_t *conn) {
-    if (tpx_queue_empty(conn->in_bufq) || tpx_queue_empty(conn->out_bufq))
-        return 1;
-    if (conn->in_bufq->first == conn->in_bufq->last &&
-        conn->in_bufq->read_idx == conn->in_bufq->write_idx)
+int tpx_outbuf_empty(connection_t *conn) {
+    if (tpx_queue_empty(conn->out_bufq))
         return 1;
     if (conn->out_bufq->first == conn->out_bufq->last &&
         conn->out_bufq->read_idx == conn->out_bufq->write_idx)
+        return 1;
+    return 0;
+}
+
+int tpx_inbuf_empty(connection_t *conn) {
+    if (tpx_queue_empty(conn->in_bufq))
+        return 1;
+    if (conn->in_bufq->first == conn->in_bufq->last &&
+        conn->in_bufq->read_idx == conn->in_bufq->write_idx)
         return 1;
     return 0;
 }
@@ -59,8 +52,10 @@ tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events,
         queue_t *bufq = tpx_queue_new();
         // We're the listening socket
         connection_t *newconn = (conn->handle_accept)(conn, ssl_ctx, bufq, bufq);
-        if (!newconn)
+        if (!newconn) {
+            tpx_queue_free(bufq);
             return TPX_FAILURE;
+        }
 
         struct epoll_event ev;
         ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
@@ -79,6 +74,9 @@ void tpx_conn_close(connection_t *conn, int epollfd) {
     free(conn);
 }
 
+tpx_err_t tpx_handle_connect(connection_t *conn) {
+    return (conn->handle_process)(conn);
+}
 
 tpx_err_t tpx_handle_read(connection_t *conn) {
     unsigned char *rdbuf = NULL;
@@ -153,7 +151,7 @@ tpx_err_t tpx_handle_read(connection_t *conn) {
 }
 
 tpx_err_t tpx_handle_write(connection_t *conn) {
-    if (tpx_bufs_empty(conn))
+    if (tpx_outbuf_empty(conn))
         return TPX_SUCCESS;
 
     unsigned char *wbuf = NULL;
@@ -242,9 +240,13 @@ connection_t *tpx_handle_accept(connection_t *conn, SSL_CTX *ctx,
 }
 
 void tpx_handle_close(connection_t *conn) {
-    assert(!conn->closed);
+    assert(conn->state != CS_CLOSED);
+    if (conn->ssl)
+        SSL_free(conn->ssl);
+    conn->ssl = NULL;
+    
     close(conn->fd);
-    conn->closed = 1;
+    conn->state = CS_CLOSED;
 }
 
 
@@ -311,12 +313,19 @@ connection_t *tpx_create_listener(const char *host,
     connection_t *conn = malloc(sizeof(connection_t));
 
     conn->fd = lsock;
-    conn->out_bufq = NULL;
     conn->in_bufq = NULL;
+    conn->out_bufq = NULL;
     conn->ssl = NULL;
+    memset(&conn->peer_addr, 0, sizeof(struct sockaddr_storage));
+    conn->peer_addrlen = 0;
     conn->handle_read = NULL;
     conn->handle_write = NULL;
+    conn->handle_process = NULL;
+    conn->handle_connect = NULL;
     conn->handle_accept = &tpx_handle_accept;
+    conn->handle_close = NULL;
+    conn->state = CS_LISTENING;
+    conn->proxy = NULL;
     
     return conn;
 }
@@ -355,12 +364,77 @@ connection_t *tpx_create_accept(int conn_sock, struct sockaddr *addr,
     conn->in_bufq = in_bufq;
     conn->out_bufq = out_bufq;
     memcpy(&conn->peer_addr, addr, addrlen);
+    conn->peer_addrlen = addrlen;
     conn->ssl = ssl;
+    conn->handle_connect = NULL;
+    conn->handle_read = &tpx_handle_read;
+    conn->handle_write = &tpx_handle_write;
+    conn->handle_process = &tpx_handle_process;
+    conn->handle_connect = NULL;
+    conn->handle_accept = NULL;
+    conn->handle_close = &tpx_handle_close;
+    conn->state = CS_CONNECTED;
+    conn->proxy = NULL;
+
+    return conn;
+}
+
+
+connection_t *tpx_create_connect(struct sockaddr *addr, socklen_t addrlen,
+                                 queue_t *in_bufq, queue_t *out_bufq) {
+    int conn_sock = socket(addr->sa_family, SOCK_STREAM, 0);
+    if (conn_sock < 0) {
+        perror("tpx_create_connect: socket");
+        return NULL;
+    }
+    
+    int sock_flags;
+    if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
+        perror("tpx_create_connect: fcntl(GETFL)");
+        return NULL;
+    }
+    if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
+        perror("tpx_create_connect: fcntl(SETFL)");
+        return NULL;
+    }
+
+    if (connect(conn_sock, addr, addrlen) == -1 && errno != EINPROGRESS) {
+        perror("tpx_create_connect: connect");
+        return NULL;
+    }
+
+    connection_t *conn = malloc(sizeof(connection_t));
+
+    conn->fd = conn_sock;
+    conn->in_bufq = in_bufq;
+    conn->out_bufq = out_bufq;
+    memcpy(&conn->peer_addr, addr, addrlen);
+    conn->peer_addrlen = addrlen;
+    conn->ssl = NULL;
+    conn->handle_connect = &tpx_handle_connect;
     conn->handle_read = &tpx_handle_read;
     conn->handle_write = &tpx_handle_write;
     conn->handle_process = &tpx_handle_process;
     conn->handle_close = &tpx_handle_close;
-    conn->closed = 0;
+    conn->state = CS_CONNECTING;
+    conn->proxy = NULL;
     
     return conn;
+}
+
+tpx_err_t tpx_conn_shutdown(connection_t *conn) {
+    if (!conn->ssl)
+        return TPX_FAILURE;
+    
+    int ret = SSL_shutdown(conn->ssl);
+    if (ret == 1) {
+        conn->state = CS_DONE;
+        return TPX_SUCCESS;
+    } else if (ret < 0) {
+        ERR_print_errors_fp(stderr);
+        fprintf(stderr, "tpx_conn_shutdown\n");
+        conn->state = CS_DONE;
+        return TPX_FAILURE;
+    }
+    return TPX_AGAIN;
 }

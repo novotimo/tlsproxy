@@ -1,5 +1,5 @@
 ## Connection details of the backend server
-target-ip: localhost
+target-ip: 127.0.0.1
 target-port: 8080
 
 ## The proxy will accept connections on <listen-ip>:<listen-port>
