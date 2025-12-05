@@ -3,7 +3,6 @@
 #include <openssl/pem.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <sys/epoll.h>
 
 #include "config.h"
@@ -19,12 +18,13 @@
 
 void usage(const char *prog);
 void main_loop(int epollfd, SSL_CTX *ssl_ctx);
+tpx_config_t *load_config(const char *conf_file);
+void start_listeners(tpx_config_t *config, int epollfd);
+
 SSL_CTX *init_openssl(tpx_config_t *config);
 void load_servcert(tpx_config_t *config, SSL_CTX *ctx);
 void load_cacerts(tpx_config_t *config, SSL_CTX *ctx);
 void load_servkey(tpx_config_t *config, SSL_CTX *ctx);
-tpx_config_t *load_config(const char *conf_file);
-void start_listeners(tpx_config_t *config, int epollfd);
 
 
 static const cyaml_config_t cyaml_config = {
@@ -144,7 +144,12 @@ SSL_CTX *init_openssl(tpx_config_t *config) {
              "config with both cert-chain and cacerts NULL!");
     }
 
-    if (SSL_CTX_build_cert_chain(ctx, 0) != 1) {
+    int flags = config->cacerts == NULL
+                    ? SSL_BUILD_CHAIN_FLAG_UNTRUSTED |
+                      SSL_BUILD_CHAIN_FLAG_IGNORE_ERROR
+                    : 0;
+
+    if (SSL_CTX_build_cert_chain(ctx, flags) != 1) {
         SSL_CTX_free(ctx);
         ERR_print_errors_fp(stderr);
         errx(EXIT_FAILURE, "init_openssl: Failed to build cert chain");

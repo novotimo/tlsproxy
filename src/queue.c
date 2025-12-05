@@ -22,6 +22,8 @@ int tpx_enqueue(queue_t *queue, unsigned char *buf, size_t buflen) {
         queue->last->next = elem;
         queue->last = elem;
     }
+
+    return TPX_SUCCESS;
 }
 
 int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen) {

@@ -9,15 +9,14 @@
 #include "queue.h"
 
 
-
 #define TPX_NET_BUFSIZE 16384
 
+// These are macros just so we can run them as a loop condition
 #define DO_READ(ssl, fd, buf, bufsize) \
     ssl ? SSL_read(ssl,buf,bufsize) : read(fd,buf,bufsize)
 
 #define DO_SEND(ssl, fd, buf, bufsize) \
-    ssl ? SSL_write(ssl,buf,bufsize) :send(fd,buf,bufsize,0)
-
+    ssl ? SSL_write(ssl,buf,bufsize) : send(fd,buf,bufsize,0)
 
 
 struct proxy_s;
@@ -104,7 +103,7 @@ typedef struct connection_s {
  * @param conn The connection context
  * @param events The epoll events ready on the socket
  */
-tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events,
+tpx_err_t tpx_conn_dispatch(connection_t *conn, int epollfd, uint32_t events,
                          SSL_CTX *ssl_ctx);
 
 /**

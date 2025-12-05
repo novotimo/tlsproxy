@@ -32,7 +32,7 @@ int tpx_inbuf_empty(connection_t *conn) {
     return 0;
 }
 
-tpx_err_t tpx_handle_all(connection_t *conn, int epollfd, uint32_t events,
+tpx_err_t tpx_conn_dispatch(connection_t *conn, int epollfd, uint32_t events,
                          SSL_CTX *ssl_ctx) {
     int ret = TPX_SUCCESS;
     // We want to handle writes first so that the queue doesn't
