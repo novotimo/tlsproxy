@@ -1,8 +1,8 @@
-target-ip: localhost
-target-port: 80
+target-ip: 127.0.0.1
+target-port: 8080
 
 listen-ip: 0.0.0.0
-listen-port: 443
+listen-port: 8443
 
 cert-chain: chain.pem
 servkey: servkey.pem
