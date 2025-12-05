@@ -3,6 +3,8 @@
 
 #include <stdlib.h>
 
+#include "errors.h"
+
 
 /** The buffer queue element */
 typedef struct queue_elem_s {
@@ -33,7 +35,7 @@ typedef struct queue_s {
  *            insertion. It's expected that this buffer is malloc'd (or NULL).
  * @param[in] buflen The size of the data in the buffer.
  */
-int tpx_enqueue(queue_t *queue, unsigned char *buf, size_t buflen);
+tpx_err_t enqueue(queue_t *queue, unsigned char *buf, size_t buflen);
 
 /**
  * @brief Takes the first buffer from the queue and deletes it.
@@ -47,7 +49,7 @@ int tpx_enqueue(queue_t *queue, unsigned char *buf, size_t buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
+tpx_err_t dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
 
 /**
  * @brief Gets the first buffer from the queue without deleting it.
@@ -59,7 +61,7 @@ int tpx_dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
+tpx_err_t queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
 
 /**
  * @brief Peeks the last buffer from the queue.
@@ -72,12 +74,12 @@ int tpx_queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-int tpx_queue_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
+tpx_err_t queue_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
 
-int tpx_queue_empty(queue_t *queue);
+int queue_empty(queue_t *queue);
 
-queue_t *tpx_queue_new();
-void tpx_queue_free(queue_t *queue);
+queue_t *queue_new();
+void queue_free(queue_t *queue);
 
 
 #endif
