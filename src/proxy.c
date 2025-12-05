@@ -4,193 +4,366 @@
 #include <assert.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "errors.h"
+#include "event.h"
+#include "queue.h"
 
-tpx_err_t tpx_proxy_dispatch(connection_t *conn, int epollfd, uint32_t events,
-                               SSL_CTX *ssl_ctx) {
-    int ret = TPX_SUCCESS;
-    switch (conn->state) {
-    case CS_LISTENING:
-        assert(conn->handle_accept);
-        if (0 != (events | EPOLLIN) && conn->handle_accept) {
-            queue_t *bufq_c2s = tpx_queue_new();
-            queue_t *bufq_s2c = tpx_queue_new();
-            connection_t *newconn =
-                (conn->handle_accept)(conn, ssl_ctx, bufq_c2s, bufq_s2c);
-            if (!newconn) {
-                tpx_queue_free(bufq_c2s);
-                tpx_queue_free(bufq_s2c);
-                return TPX_FAILURE;
-            }
-
-            // Add both fds to epoll
-            struct epoll_event ev;
-            ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-            ev.data.ptr = newconn;
-            if (epoll_ctl(epollfd, EPOLL_CTL_ADD, newconn->fd, &ev) == -1)
-                err(EXIT_FAILURE, "tpx_handle_all: epoll_ctl1");
-
-            newconn = newconn->proxy->plain;
-            ev.data.ptr = newconn;
-            if (epoll_ctl(epollfd, EPOLL_CTL_ADD, newconn->fd, &ev) == -1)
-                err(EXIT_FAILURE, "tpx_handle_all: epoll_ctl2");
-        }
-        break;
-    case CS_CONNECTING:
-        if (0 != (events | EPOLLOUT) && conn->handle_connect)
-            return (conn->handle_connect)(conn);
-    case CS_CONNECTED:
-        // We want to handle writes first so that the queue doesn't
-        // grow as big
-        if (0 != (events | EPOLLOUT) && conn->handle_write)
-            ret = (conn->handle_write)(conn);
-        if (ret != TPX_SUCCESS)
-            return ret;
-    
-        if (0 != (events | EPOLLIN) && conn->handle_read)
-            return (conn->handle_read)(conn);
-        break;
-    case CS_CLOSING:
-        ret = tpx_conn_shutdown(conn);
-        if (ret == TPX_SUCCESS || ret == TPX_FAILURE) {
-            conn->proxy->state = PS_DONE;
-            tpx_proxy_close(conn, epollfd);
-        }
-        break;
-    case CS_DONE:
-    case CS_CLOSED:
-        // This should never happen I think
-        assert(0);
-    }
-    return ret;
-}
+int create_connect(proxy_t *proxy);
+tpx_err_t proxy_handle_connect(proxy_t *proxy);
 
 
-connection_t *tpx_proxy_listen(const char *lhost, const unsigned short lport,
-                               const char *thost, const unsigned short tport) {
-    connection_t *listener = tpx_create_listener(lhost, lport);
-
-    listener->handle_accept = &tpx_proxy_accept;
-
-    // Add remote connect address to listener
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = 0;
-    hints.ai_protocol = 0;
-
-    char service[6];
-    snprintf(service, sizeof(service), "%d", tport);
-    
-    struct addrinfo *connect_addr;
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = 0;
-    hints.ai_protocol = 0;
-    int error = getaddrinfo(thost, service, &hints, &connect_addr);
-    if (error != 0)
-        errx(EXIT_FAILURE, "getaddrinfo for listener: %s",
-             gai_strerror(error));
-
-    memcpy(&listener->peer_addr, connect_addr->ai_addr, connect_addr->ai_addrlen);
-    listener->peer_addrlen = connect_addr->ai_addrlen;
-    freeaddrinfo(connect_addr);
-    return listener;
-}
-
-connection_t *tpx_proxy_accept(connection_t *conn, SSL_CTX *ssl_ctx,
-                          queue_t *bufq_c2s, queue_t *bufq_s2c) {
-    connection_t *enc_conn =
-        tpx_handle_accept(conn, ssl_ctx, bufq_c2s, bufq_s2c);
-    if (!enc_conn)
-        return NULL;
-    
-    enc_conn->handle_process = &tpx_proxy_client_process;
-
-    connection_t *plain_conn =
-        tpx_create_connect((struct sockaddr *)&conn->peer_addr, conn->peer_addrlen,
-                           bufq_s2c, bufq_c2s);
-    if (!plain_conn) {
-        (enc_conn->handle_close)(enc_conn);
+proxy_t *create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
+                      struct sockaddr const* server_addr,
+                      socklen_t server_addrlen) {
+    proxy_t *proxy = malloc(sizeof(proxy_t));
+    if (!proxy) {
+        perror("create_proxy: malloc");
         return NULL;
     }
 
-    plain_conn->handle_process = &tpx_proxy_server_process;
-    plain_conn->handle_connect = &tpx_proxy_handle_connect;
-
-    proxy_t *proxy = calloc(1, sizeof(proxy_t));
-    proxy->enc = enc_conn;
-    proxy->plain = plain_conn;
+    proxy->event_id = EV_PROXY;
+    proxy->c2s = queue_new();
+    proxy->s2c = queue_new();
+    proxy->client_fd = accepted_fd;
+    memcpy(&proxy->server_addr, server_addr, server_addrlen);
+    proxy->server_addrlen = server_addrlen;
+    proxy->ssl = ssl;
     proxy->state = PS_CLIENT_CONNECTED;
 
-    enc_conn->proxy = proxy;
-    plain_conn->proxy = proxy;
-
-    return enc_conn;
-}
-
-tpx_err_t tpx_proxy_handle_connect(connection_t *conn) {
-    proxy_t *proxy = conn->proxy;
-
-    if (connect(conn->fd, (struct sockaddr *)&conn->peer_addr,
-                conn->peer_addrlen) == 0) {
+    proxy->serv_fd = create_connect(proxy);
+    tpx_err_t ret = proxy_handle_connect(proxy);
+    if (ret == TPX_SUCCESS)
         proxy->state = PS_READY;
-        conn->state = CS_CONNECTED;
-        return TPX_SUCCESS;
-    } else if (errno == EAGAIN) {
-        conn->state = CS_CONNECTING;
-        return TPX_SUCCESS;
-    } else {
-        perror("tpx_proxy_handle_connect");
-        return TPX_FAILURE;
+    else if (ret == TPX_AGAIN)
+        proxy->state = PS_SERVER_CONNECTING;
+    else {
+        proxy_close(proxy, -1);
+        fprintf(stderr, "create_proxy: connecting socket");
+        proxy = NULL;
     }
 
+    return proxy;
 }
 
-
-tpx_err_t tpx_proxy_client_process(connection_t *conn) {
-    return (conn->proxy->plain->handle_write)(conn->proxy->plain);
+int create_connect(proxy_t *proxy) {
+    int conn_sock = socket(proxy->server_addr.ss_family, SOCK_STREAM, 0);
+    if (conn_sock < 0) {
+        perror("create_connect: socket");
+        return -1;
+    }
+    
+    int sock_flags;
+    if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
+        perror("create_connect: fcntl(GETFL)");
+        return -1;
+    }
+    if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
+        perror("create_connect: fcntl(SETFL)");
+        return -1;
+    }
+    return conn_sock;
 }
 
-tpx_err_t tpx_proxy_server_process(connection_t *conn) {
-    return (conn->proxy->enc->handle_write)(conn->proxy->enc);
-}
-
-void tpx_proxy_close(connection_t *conn, int epollfd) {
-    proxy_t *proxy = conn->proxy;
-    connection_t *enc = proxy->enc;
-    connection_t *plain = proxy->plain;
-
-    assert(conn==enc || conn==plain);
-    if (conn == plain && proxy->state == PS_READY) {
-        proxy->state = PS_SERVER_DISCONN;
-        enc->state = CS_CLOSING;
-        if (tpx_conn_shutdown(conn) == 1) {
-            free(proxy);
-            // Both conns use the same buffers so they only need freeing once
-            tpx_queue_free(enc->in_bufq);
-            tpx_queue_free(enc->out_bufq);
-        
-            tpx_conn_close(enc, epollfd);
-            tpx_conn_close(plain, epollfd);
-        }
-    } else if (proxy->state == PS_SERVER_DISCONN ||
-               proxy->state == PS_READY ||
-               proxy->state == PS_CLIENT_CONNECTED) {
-        free(proxy);
-        // Both conns use the same buffers so they only need freeing once
-        tpx_queue_free(enc->in_bufq);
-        tpx_queue_free(enc->out_bufq);
-        
-        tpx_conn_close(enc, epollfd);
-        tpx_conn_close(plain, epollfd);
+tpx_err_t proxy_handle_connect(proxy_t *proxy) {
+    assert(proxy->state == PS_CLIENT_CONNECTED ||
+           proxy->state == PS_SERVER_CONNECTING);
+    int retcode = connect(proxy->serv_fd,
+                          (struct sockaddr *)&proxy->server_addr,
+                          proxy->server_addrlen);
+    if (retcode == -1 && errno != EINPROGRESS) {
+        perror("tpx_create_connect: connect");
+        return TPX_FAILURE;
+    } else if (retcode == -1 && errno == EINPROGRESS) {
+        return TPX_AGAIN;
     } else {
-        errx(EXIT_FAILURE, "Called tpx_proxy_close in state %d", conn->state);
+        return TPX_SUCCESS;
+    }
+}
+
+tpx_err_t proxy_add_to_epoll(proxy_t *proxy, int epollfd) {
+    proxy_t *serv_proxy = proxy;
+    // That's right, we're tagging the proxy pointer to see whether it's
+    // a client or server event.
+    proxy_t *client_proxy = (proxy_t *)((uintptr_t)proxy | 0x1);
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    ev.data.ptr = serv_proxy;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serv_proxy->serv_fd, &ev) == -1) {
+        perror("Couldn't add server socket to epoll");
+        return TPX_FAILURE;
+    }
+    
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    ev.data.ptr = client_proxy;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serv_proxy->client_fd, &ev) == -1) {
+        epoll_ctl(epollfd, EPOLL_CTL_DEL, serv_proxy->serv_fd, NULL);
+        perror("Couldn't add client socket to epoll");
+        return TPX_FAILURE;
+    }
+    return TPX_SUCCESS;
+}
+
+void proxy_close(proxy_t *proxy, int epollfd) {
+    if (proxy->state == PS_CLIENT_DISCONNECTED) {
+        if (proxy->ssl)
+            SSL_free(proxy->ssl);
+        proxy->ssl = NULL;
+    } else if (proxy->state == PS_SERVER_DISCONNECTED) {
+        // If the shutdown isn't done yet
+        if (SSL_shutdown(proxy->ssl) == 0)
+            return;
+        SSL_free(proxy->ssl);
+    }
+    
+    if (epollfd != -1) {
+        epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->serv_fd, NULL);
+        epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->client_fd, NULL);
+    }
+
+    queue_free(proxy->c2s);
+    queue_free(proxy->s2c);
+    
+    close(proxy->client_fd);
+    close(proxy->serv_fd);
+    free(proxy);
+}
+
+void handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
+                  void *ssl_ctx, uint8_t tag) {
+    tpx_err_t ret = TPX_SUCCESS;
+
+    switch (proxy->state) {
+    case PS_CLIENT_CONNECTED:
+    case PS_SERVER_CONNECTING:
+        if (0 == (tag & 1)) {
+            ret = proxy_handle_connect(proxy);
+            if (ret == TPX_AGAIN)
+                proxy->state = PS_SERVER_CONNECTING;
+            else if (ret == TPX_SUCCESS)
+                proxy->state = PS_READY;
+            return;
+        }
+    case PS_READY:
+        // We want to handle writes first so that the queue doesn't
+        // grow as big
+        // TODO: Remember to handle closed connections here
+        if (0 != (events | EPOLLOUT))
+            ret = proxy_handle_write(proxy, tag);
+
+        if (ret != TPX_SUCCESS) {
+            if (0 != (tag & 1))
+                proxy->state = PS_CLIENT_DISCONNECTED;
+            else
+                proxy->state = PS_SERVER_DISCONNECTED;
+            break;
+        }
+    
+        if (0 != (events | EPOLLIN))
+            ret = proxy_handle_read(proxy, tag);
+        
+        if (ret != TPX_SUCCESS) {
+            if (0 != (tag & 1))
+                proxy->state = PS_CLIENT_DISCONNECTED;
+            else
+                proxy->state = PS_SERVER_DISCONNECTED;
+            break;
+        }
+        return;
+    default:
+        break;
+    }
+    if (proxy->state == PS_SERVER_DISCONNECTED ||
+        proxy->state == PS_CLIENT_DISCONNECTED) {
+        proxy_close(proxy, epollfd);
+    }
+}
+
+tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
+    unsigned char *rdbuf = NULL;
+    size_t buflen = 0;
+
+    queue_t *in_bufq, *out_bufq;
+    int fd;
+    if (is_client) {
+        in_bufq = proxy->c2s;
+        out_bufq = proxy->s2c;
+        // Not actually used, but makes things clearer
+        fd = proxy->client_fd;
+    } else {
+        in_bufq = proxy->s2c;
+        out_bufq = proxy->c2s;
+        fd = proxy->serv_fd;
+    }
+
+    // Invariants
+    assert(in_bufq->write_idx < TPX_NET_BUFSIZE);
+    assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
+
+    if (in_bufq->write_idx == -1) {
+        // Add new chunk
+        rdbuf = malloc(TPX_NET_BUFSIZE);
+        buflen = TPX_NET_BUFSIZE;
+        enqueue(in_bufq, rdbuf, buflen);
+        in_bufq->write_idx = 0;
+    } else {
+        // Use existing chunk
+        switch (queue_peek_last(in_bufq, &rdbuf, &buflen)) {
+        case TPX_FAILURE:
+            fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted\n",
+                    in_bufq);
+            return TPX_FAILURE;
+        case TPX_EMPTY:
+            fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted: "
+                    "in_bufq->write_idx isn't -1 with an empty queue\n",
+                    in_bufq);
+            return TPX_FAILURE;
+        case TPX_SUCCESS:
+        default:
+            assert(in_bufq->write_idx < buflen);
+        }
+    }
+
+    
+    
+    int nbytes = -1;
+    while (buflen > in_bufq->write_idx &&
+           ((nbytes = DO_READ(proxy->ssl, fd,
+                              rdbuf + in_bufq->write_idx,
+                              buflen - in_bufq->write_idx)) > 0)) {
+        assert(buflen >= nbytes);
+        if (in_bufq->write_idx + nbytes == buflen) {
+            rdbuf = malloc(TPX_NET_BUFSIZE);
+            buflen = TPX_NET_BUFSIZE;
+            enqueue(in_bufq, rdbuf, buflen);
+            in_bufq->write_idx = 0;
+        } else {
+            in_bufq->write_idx += nbytes;
+        }
+    }
+
+    // Invariants
+    assert(in_bufq->write_idx < TPX_NET_BUFSIZE);
+    assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
+
+    if (is_client && (SSL_get_error(proxy->ssl, nbytes)
+                      != SSL_ERROR_WANT_READ)) {
+        ERR_print_errors_fp(stderr);
+        return TPX_CLOSED;
+    }
+
+    if (nbytes == -1 && errno != EAGAIN) {
+        perror("tpx_handle_read");
+        return TPX_CLOSED;
+    }
+
+    return proxy_process_data(proxy, is_client);
+}
+
+tpx_err_t proxy_process_data(proxy_t *proxy, int is_client) {
+    return proxy_handle_write(proxy, !is_client);
+}
+
+int outbuf_empty(proxy_t *proxy, int is_client) {
+    if (is_client && queue_empty(proxy->s2c))
+        return 1;
+    if (!is_client && queue_empty(proxy->c2s))
+        return 1;
+    if (is_client && proxy->s2c->first == proxy->s2c->last
+        && proxy->s2c->read_idx == proxy->s2c->write_idx)
+        return 1;
+    if (!is_client && proxy->c2s->first == proxy->c2s->last
+        && proxy->c2s->read_idx == proxy->c2s->write_idx)
+        return 1;
+    return 0;
+}
+
+tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
+    if (outbuf_empty(proxy, is_client))
+        return TPX_SUCCESS;
+
+    unsigned char *wbuf = NULL;
+    size_t wbuflen = 0;
+
+    queue_t *in_bufq, *out_bufq;
+    int fd;
+    if (is_client) {
+        in_bufq = proxy->c2s;
+        out_bufq = proxy->s2c;
+        // Not actually used, but makes things clearer
+        fd = proxy->client_fd;
+    } else {
+        in_bufq = proxy->s2c;
+        out_bufq = proxy->c2s;
+        fd = proxy->serv_fd;
+    }
+    
+    int nsent;
+    size_t real_buflen = 0;
+    for (;;) {
+        // Invariants
+        assert(out_bufq->read_idx < TPX_NET_BUFSIZE);
+        // If both indices are in the came chunk then read idx can't
+        // be after write
+        assert(!((out_bufq->first == out_bufq->last) &&
+                 (out_bufq->write_idx < out_bufq->read_idx)));
+    
+        switch (queue_peek(out_bufq, &wbuf, &wbuflen)) {
+        case TPX_FAILURE:
+            fprintf(stderr, "tpx_handle_write: The queue @ 0x%p is corrupted\n",
+                    out_bufq);
+            return TPX_FAILURE;
+        case TPX_EMPTY:
+            return TPX_SUCCESS;
+        case TPX_SUCCESS:
+        default:
+            assert(wbuf);
+            // Get only the part of the buf that's got data in it
+            if (out_bufq->first == out_bufq->last)
+                real_buflen = out_bufq->write_idx;
+            else
+                real_buflen = wbuflen;
+            
+            while (real_buflen > out_bufq->read_idx &&
+                   (nsent = DO_SEND(proxy->ssl, fd,
+                                    wbuf + out_bufq->read_idx,
+                                    real_buflen - out_bufq->read_idx))
+                   > 0) {
+                out_bufq->read_idx += nsent;
+            }
+
+            // Are we done with this chunk?
+            if (out_bufq->read_idx == wbuflen) {
+                dequeue(out_bufq, NULL, NULL);
+                free(wbuf);
+                out_bufq->read_idx = 0;
+            } else if (out_bufq->read_idx == real_buflen) {
+                // This means wbuflen != real_buflen so we're at the
+                // end of the chunk currently being written
+                return TPX_SUCCESS;
+            }
+            
+            if (nsent == -1 && errno == EAGAIN) {
+                return TPX_SUCCESS;
+            } else if (nsent == -1 && errno != EAGAIN) {
+                perror("tpx_handle_write");
+                return TPX_CLOSED;
+            }
+        }
+
+        // Invariants
+        assert(out_bufq->read_idx < TPX_NET_BUFSIZE);
+        // If both indices are in the came chunk then read idx can't
+        // be after write
+        assert(!((out_bufq->first == out_bufq->last) &&
+                 (out_bufq->write_idx < out_bufq->read_idx)));
     }
 }

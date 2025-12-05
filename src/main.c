@@ -6,8 +6,9 @@
 #include <sys/epoll.h>
 
 #include "config.h"
-#include "connection.h"
 #include "errors.h"
+#include "event.h"
+#include "listen.h"
 #include "proxy.h"
 
 
@@ -68,14 +69,9 @@ void main_loop(int epollfd, SSL_CTX *ssl_ctx) {
     
     for (;;) {
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
-        for (size_t n=0; n < nfds; ++n) {
-            tpx_err_t handle_err = tpx_proxy_dispatch(events[n].data.ptr,
-                                                        epollfd,
-                                                        events[n].events,
-                                                        ssl_ctx);
-            if (handle_err == TPX_FAILURE)
-                tpx_proxy_close(events[n].data.ptr, epollfd);
-        }
+        for (size_t n=0; n < nfds; ++n)
+            dispatch_events(events[n].data.ptr, epollfd, events[n].events,
+                            ssl_ctx);
     }
 }
 
@@ -94,10 +90,10 @@ tpx_config_t *load_config(const char *config_file) {
 }
 
 void start_listeners(tpx_config_t *tpx_config, int epollfd) {
-    connection_t *listener = tpx_proxy_listen(tpx_config->listen_ip,
-                                              tpx_config->listen_port,
-                                              tpx_config->target_ip,
-                                              tpx_config->target_port);
+    listen_t *listener = create_listener(tpx_config->listen_ip,
+                                         tpx_config->listen_port,
+                                         tpx_config->target_ip,
+                                         tpx_config->target_port);
     
     struct epoll_event ev;
     ev.events = EPOLLIN;
