@@ -1,5 +1,3 @@
-#include "main.h"
-
 #include <err.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -12,6 +10,10 @@
 #include "connection.h"
 #include "errors.h"
 #include "proxy.h"
+
+
+#define TPX_MAX_EVENTS 100
+
 
 static const cyaml_config_t cyaml_config = {
 	.log_fn = cyaml_log,

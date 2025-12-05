@@ -3,9 +3,6 @@
 
 #include "connection.h"
 
-/*********************************************
- * Enums and Structs
- ********************************************/
 
 typedef enum proxy_state_e {
     PS_CLIENT_CONNECTED,
@@ -24,10 +21,6 @@ typedef struct proxy_s {
 } proxy_t;
 
 
-/*********************************************
- * Prototypes
- ********************************************/
-
 tpx_err_t tpx_proxy_handle_all(connection_t *conn, int epollfd,
                                uint32_t events, SSL_CTX *ssl_ctx);
 connection_t *tpx_proxy_listen(const char *lhost, const unsigned short lport,
@@ -39,7 +32,6 @@ tpx_err_t tpx_proxy_server_process(connection_t *conn);
 tpx_err_t tpx_proxy_client_process(connection_t *conn);
 
 void tpx_proxy_close(connection_t *conn, int epollfd);
-
 
 
 #endif

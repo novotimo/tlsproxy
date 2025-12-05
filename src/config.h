@@ -3,10 +3,6 @@
 
 #include <cyaml/cyaml.h>
 
-/*********************************************
- * Structs
- ********************************************/
-
 typedef struct tpx_config {
     const char *target_ip;
     unsigned int target_port;
@@ -22,9 +18,6 @@ typedef struct tpx_config {
     const char *servkeypass;
 } tpx_config_t;
 
-/*********************************************
- * Globals
- ********************************************/
 
 static const cyaml_schema_value_t cacert_entry = {
     CYAML_VALUE_STRING(CYAML_FLAG_POINTER, char, 0, CYAML_UNLIMITED),
@@ -65,10 +58,6 @@ static const cyaml_schema_value_t top_schema = {
     CYAML_VALUE_MAPPING(
         CYAML_FLAG_POINTER, tpx_config_t, top_mapping_schema),
 };
-
-/*********************************************
- * Prototypes
- ********************************************/
 
 int tpx_validate_conf(tpx_config_t *config);
 

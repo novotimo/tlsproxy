@@ -3,9 +3,6 @@
 
 #include <stdlib.h>
 
-/*********************************************
- * Structs
- ********************************************/
 
 /** The buffer queue element */
 typedef struct queue_elem_s {
@@ -22,10 +19,6 @@ typedef struct queue_s {
     int write_idx;
 } queue_t;
 
-
-/*********************************************
- * Prototypes
- ********************************************/
 
 /**
  * @brief Pushes a buffer to the queue.
@@ -80,7 +73,6 @@ int tpx_queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
  *         empty queue.
  */
 int tpx_queue_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
-
 
 int tpx_queue_empty(queue_t *queue);
 

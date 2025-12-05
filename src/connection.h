@@ -8,9 +8,7 @@
 #include "errors.h"
 #include "queue.h"
 
-/*********************************************
- * Defines
- ********************************************/
+
 
 #define TPX_NET_BUFSIZE 16384
 
@@ -20,9 +18,7 @@
 #define DO_SEND(ssl, fd, buf, bufsize) \
     ssl ? SSL_write(ssl,buf,bufsize) :send(fd,buf,bufsize,0)
 
-/*********************************************
- * Enums and structs
- ********************************************/
+
 
 struct proxy_s;
 
