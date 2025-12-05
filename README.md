@@ -9,6 +9,8 @@ This is an event-based TLS proxy server inspired by nginx. It is based on `epoll
 - OpenSSL 3.x
 - libcyaml
 - Doxygen
+- [Verstable](https://github.com/JacksonAllan/Verstable) (Included)
+  - `src/verstable.h` is from commit https://github.com/JacksonAllan/Verstable/commit/dd83033fb72736a1d2332e43b84b7794b5d19635
 
 To build this, you first need to install https://github.com/tlsa/libcyaml. This was built against `libcyaml` 1.4.2. Follow their instructions to install it first.
 
