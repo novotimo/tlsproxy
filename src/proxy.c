@@ -10,7 +10,7 @@
 
 #include "errors.h"
 
-tpx_err_t tpx_proxy_handle_all(connection_t *conn, int epollfd, uint32_t events,
+tpx_err_t tpx_proxy_dispatch(connection_t *conn, int epollfd, uint32_t events,
                                SSL_CTX *ssl_ctx) {
     int ret = TPX_SUCCESS;
     switch (conn->state) {

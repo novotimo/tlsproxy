@@ -21,7 +21,7 @@ typedef struct proxy_s {
 } proxy_t;
 
 
-tpx_err_t tpx_proxy_handle_all(connection_t *conn, int epollfd,
+tpx_err_t tpx_proxy_dispatch(connection_t *conn, int epollfd,
                                uint32_t events, SSL_CTX *ssl_ctx);
 connection_t *tpx_proxy_listen(const char *lhost, const unsigned short lport,
                                const char *thost, const unsigned short tport);
