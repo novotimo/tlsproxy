@@ -7,19 +7,19 @@
 
 
 /** The buffer queue element */
-typedef struct queue_elem_s {
-    struct queue_elem_s *next;
+typedef struct bufq_elem_s {
+    struct bufq_elem_s *next;
     unsigned char *buf;
     size_t buflen;
-} queue_elem_t;
+} bufq_elem_t;
 
 /** The buffer queue, as simple as it can be */
-typedef struct queue_s {
-    queue_elem_t *first;
-    queue_elem_t *last;
+typedef struct bufq_s {
+    bufq_elem_t *first;
+    bufq_elem_t *last;
     int read_idx;
     int write_idx;
-} queue_t;
+} bufq_t;
 
 
 /**
@@ -35,7 +35,7 @@ typedef struct queue_s {
  *            insertion. It's expected that this buffer is malloc'd (or NULL).
  * @param[in] buflen The size of the data in the buffer.
  */
-tpx_err_t enqueue(queue_t *queue, unsigned char *buf, size_t buflen);
+tpx_err_t enqueue(bufq_t *queue, unsigned char *buf, size_t buflen);
 
 /**
  * @brief Takes the first buffer from the queue and deletes it.
@@ -49,7 +49,7 @@ tpx_err_t enqueue(queue_t *queue, unsigned char *buf, size_t buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-tpx_err_t dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
+tpx_err_t dequeue(bufq_t *queue, unsigned char **buf, size_t *buflen);
 
 /**
  * @brief Gets the first buffer from the queue without deleting it.
@@ -61,7 +61,7 @@ tpx_err_t dequeue(queue_t *queue, unsigned char **buf, size_t *buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-tpx_err_t queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
+tpx_err_t queue_peek(bufq_t *queue, unsigned char **buf, size_t *buflen);
 
 /**
  * @brief Peeks the last buffer from the queue.
@@ -74,12 +74,12 @@ tpx_err_t queue_peek(queue_t *queue, unsigned char **buf, size_t *buflen);
  * @return TPX_SUCCESS on success, TPX_FAILURE on failure, and TPX_EMPTY on an
  *         empty queue.
  */
-tpx_err_t queue_peek_last(queue_t *queue, unsigned char **buf, size_t *buflen);
+tpx_err_t queue_peek_last(bufq_t *queue, unsigned char **buf, size_t *buflen);
 
-int queue_empty(queue_t *queue);
+int queue_empty(bufq_t *queue);
 
-queue_t *queue_new();
-void queue_free(queue_t *queue);
+bufq_t *queue_new();
+void queue_free(bufq_t *queue);
 
 
 #endif

@@ -45,7 +45,15 @@ proxy_t *create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
     else if (ret == TPX_AGAIN)
         proxy->state = PS_SERVER_CONNECTING;
     else {
-        proxy_close(proxy, -1);
+        close(proxy->serv_fd);
+        proxy->serv_fd = -1;
+
+        queue_free(proxy->c2s);
+        queue_free(proxy->s2c);
+
+        // fd hasn't been added to epoll yet, and SSL will be freed outside
+        free(proxy);
+        
         fprintf(stderr, "create_proxy: connecting socket");
         proxy = NULL;
     }
@@ -79,7 +87,7 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy) {
                           (struct sockaddr *)&proxy->server_addr,
                           proxy->server_addrlen);
     if (retcode == -1 && errno != EINPROGRESS) {
-        perror("tpx_create_connect: connect");
+        perror("proxy_handle_connect: connect");
         return TPX_FAILURE;
     } else if (retcode == -1 && errno == EINPROGRESS) {
         return TPX_AGAIN;
@@ -124,16 +132,23 @@ void proxy_close(proxy_t *proxy, int epollfd) {
         SSL_free(proxy->ssl);
     }
     
-    if (epollfd != -1) {
-        epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->serv_fd, NULL);
-        epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->client_fd, NULL);
+    if (epollfd != -1 && proxy->serv_fd != -1) {
+        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->serv_fd, NULL) == -1) {
+            perror("proxy_close: epoll_ctl(serv)");
+        }
+    } if (proxy->client_fd != -1) {
+        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->client_fd, NULL) == -1) {
+            perror("proxy_close: epoll_ctl(client)");
+        }
     }
 
     queue_free(proxy->c2s);
     queue_free(proxy->s2c);
     
-    close(proxy->client_fd);
-    close(proxy->serv_fd);
+    if (proxy->serv_fd != -1)
+        close(proxy->serv_fd);
+    if (proxy->client_fd != -1)
+        close(proxy->client_fd);
     free(proxy);
 }
 
@@ -150,6 +165,8 @@ void handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                 proxy->state = PS_SERVER_CONNECTING;
             else if (ret == TPX_SUCCESS)
                 proxy->state = PS_READY;
+            else if (ret == TPX_FAILURE)
+                proxy_close(proxy, epollfd);
             return;
         }
     case PS_READY:
@@ -191,7 +208,7 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     unsigned char *rdbuf = NULL;
     size_t buflen = 0;
 
-    queue_t *in_bufq, *out_bufq;
+    bufq_t *in_bufq, *out_bufq;
     int fd;
     if (is_client) {
         in_bufq = proxy->c2s;
@@ -293,7 +310,7 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     unsigned char *wbuf = NULL;
     size_t wbuflen = 0;
 
-    queue_t *in_bufq, *out_bufq;
+    bufq_t *in_bufq, *out_bufq;
     int fd;
     if (is_client) {
         in_bufq = proxy->c2s;

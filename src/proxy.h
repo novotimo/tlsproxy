@@ -40,8 +40,8 @@ typedef struct proxy_s {
     // This will be one of the enum values from event.h
     uint8_t event_id;
 
-    queue_t *c2s;
-    queue_t *s2c;
+    bufq_t *c2s;
+    bufq_t *s2c;
 
     // All sockets must be set to -1 once they're closed
     int client_fd;
