@@ -4,12 +4,14 @@ project(TLSProxy)
 
 find_package(OpenSSL REQUIRED)
 
+# CYaml
 add_library(cyaml SHARED IMPORTED)
 set_target_properties(cyaml PROPERTIES
   IMPORTED_LOCATION "/usr/local/lib/libcyaml.so"
   INTERFACE_INCLUDE_DIRECTORIES "/usr/local/include"
 )
 
+# Doxygen
 find_package(Doxygen
   OPTIONAL dot
   OPTIONAL_COMPONENTS mscgen dia
@@ -27,18 +29,32 @@ if(DOXYGEN_FOUND)
   )
 endif(DOXYGEN_FOUND)
 
-add_executable(tlsproxy)
-
-target_link_libraries(tlsproxy OpenSSL::SSL OpenSSL::Crypto cyaml)
-target_sources(tlsproxy
+add_library(proxylib)
+target_include_directories(proxylib PRIVATE inc)
+target_sources(proxylib
   PRIVATE
-  src/main.c
   src/config.c
   src/event.c
   src/listen.c
   src/proxy.c
   src/queue.c
 )
+
+add_executable(tlsproxy)
+
+target_link_libraries(tlsproxy OpenSSL::SSL OpenSSL::Crypto cyaml proxylib)
+target_sources(tlsproxy
+  PRIVATE
+  app/main.c
+)
+target_include_directories(tlsproxy PRIVATE inc)
+
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
+if (UNIT_TESTING)
+  find_package(cmocka 1.1.8 REQUIRED)
+  include(AddCMockaTest)
+  add_subdirectory(test)
+endif()
 
 #target_compile_options(tlsproxy
 #  PRIVATE

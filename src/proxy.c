@@ -170,10 +170,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                 ret = proxy_close(proxy, epollfd);
             return ret;
         }
+        // If we're the server socket we keep going
     case PS_READY:
-        // We want to handle writes first so that the queue doesn't
-        // grow as big
-        // TODO: Remember to handle closed connections here
         if (0 != (events | EPOLLOUT))
             ret = proxy_handle_write(proxy, tag);
 
@@ -206,6 +204,9 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         else
             return TPX_SUCCESS;
     }
+
+    // I don't see a code path here, but cppcheck wants it added.
+    return TPX_SUCCESS;
 }
 
 tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
