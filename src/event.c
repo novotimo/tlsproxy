@@ -5,17 +5,15 @@
 #include "listen.h"
 #include "proxy.h"
 
-void dispatch_events(event_t *ev, int epollfd, uint32_t events,
+tpx_err_t dispatch_events(event_t *ev, int epollfd, uint32_t events,
                           void *ssl_ctx) {
     uint8_t tag = (uintptr_t)ev & 0x3;
     ev = (event_t *)((uintptr_t)ev - tag);
     switch (ev->event_id) {
     case EV_LISTEN:
-        handle_accept((listen_t *)ev, epollfd, events, ssl_ctx);
-        break;
+        return handle_accept((listen_t *)ev, epollfd, events, ssl_ctx);
     case EV_PROXY:
-        handle_proxy((proxy_t *)ev, epollfd, events, ssl_ctx, tag);
-        break;
+        return handle_proxy((proxy_t *)ev, epollfd, events, ssl_ctx, tag);
     default:
         errx(EXIT_FAILURE, "Got unexpected event on dispatching: %d",
              ev->event_id);

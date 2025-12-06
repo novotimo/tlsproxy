@@ -19,7 +19,7 @@ int bind_listen_sock(const char *host, const unsigned short port);
 tpx_err_t get_conn(const char *host, const unsigned short port,
                    struct sockaddr *addr, socklen_t *len);
 
-void handle_accept(listen_t *listen, int epollfd, uint32_t events,
+tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
                          void *ssl_ctx) {
     struct sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
@@ -27,31 +27,31 @@ void handle_accept(listen_t *listen, int epollfd, uint32_t events,
                            &addrlen);
     if (conn_sock == -1) {
         perror("handle_accept: accept");
-        return;
+        return TPX_FAILURE;
     }
 
     int sock_flags;
     if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
         perror("handle_accept: fcntl(GETFL)");
-        return;
+        return TPX_FAILURE;
     }
     if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
         perror("handle_accept: fcntl(SETFL)");
-        return;
+        return TPX_FAILURE;
     }
 
     SSL *ssl = SSL_new((SSL_CTX *)ssl_ctx);
     if (ssl == NULL) {
         ERR_print_errors_fp(stderr);
         fprintf(stderr, "handle_accept: SSL_new: Couldn't create SSL ctx\n");
-        return;
+        return TPX_FAILURE;
     }
 
     if (SSL_set_fd(ssl, conn_sock) != 1) {
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: SSL_set_fd: Couldn't assign sock\n");
-        return;
+        return TPX_FAILURE;
     }
 
     SSL_set_accept_state(ssl);
@@ -64,7 +64,7 @@ void handle_accept(listen_t *listen, int epollfd, uint32_t events,
     if (!proxy) {
         SSL_free(ssl);
         fprintf(stderr, "Couldn't create proxy\n");
-        return;
+        return TPX_FAILURE;
     }
 
     tpx_err_t retval = proxy_add_to_epoll(proxy, epollfd);
@@ -72,7 +72,7 @@ void handle_accept(listen_t *listen, int epollfd, uint32_t events,
         // Need to call with epollfd=-1 to show that the sockets aren't in epoll
         proxy_close(proxy, -1);
         fprintf(stderr, "Couldn't add sockets to epoll, not making proxy\n");
-        return;
+        return TPX_FAILURE;
     }
 }
 

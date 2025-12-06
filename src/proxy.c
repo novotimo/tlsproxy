@@ -120,7 +120,7 @@ tpx_err_t proxy_add_to_epoll(proxy_t *proxy, int epollfd) {
     return TPX_SUCCESS;
 }
 
-void proxy_close(proxy_t *proxy, int epollfd) {
+tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
     if (proxy->state == PS_CLIENT_DISCONNECTED) {
         if (proxy->ssl)
             SSL_free(proxy->ssl);
@@ -128,7 +128,7 @@ void proxy_close(proxy_t *proxy, int epollfd) {
     } else if (proxy->state == PS_SERVER_DISCONNECTED) {
         // If the shutdown isn't done yet
         if (SSL_shutdown(proxy->ssl) == 0)
-            return;
+            return TPX_AGAIN;
         SSL_free(proxy->ssl);
     }
     
@@ -150,10 +150,11 @@ void proxy_close(proxy_t *proxy, int epollfd) {
     if (proxy->client_fd != -1)
         close(proxy->client_fd);
     free(proxy);
+    return TPX_CLOSED;
 }
 
-void handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
-                  void *ssl_ctx, uint8_t tag) {
+tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
+                       void *ssl_ctx, uint8_t tag) {
     tpx_err_t ret = TPX_SUCCESS;
 
     switch (proxy->state) {
@@ -166,8 +167,8 @@ void handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             else if (ret == TPX_SUCCESS)
                 proxy->state = PS_READY;
             else if (ret == TPX_FAILURE)
-                proxy_close(proxy, epollfd);
-            return;
+                ret = proxy_close(proxy, epollfd);
+            return ret;
         }
     case PS_READY:
         // We want to handle writes first so that the queue doesn't
@@ -194,13 +195,16 @@ void handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                 proxy->state = PS_SERVER_DISCONNECTED;
             break;
         }
-        return;
+        return TPX_SUCCESS;
     default:
         break;
     }
     if (proxy->state == PS_SERVER_DISCONNECTED ||
         proxy->state == PS_CLIENT_DISCONNECTED) {
-        proxy_close(proxy, epollfd);
+        if (proxy_close(proxy, epollfd) == TPX_CLOSED)
+            return TPX_CLOSED;
+        else
+            return TPX_SUCCESS;
     }
 }
 

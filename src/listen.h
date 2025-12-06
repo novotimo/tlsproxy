@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <sys/socket.h>
 
+#include "errors.h"
+
 
 typedef struct listen_s {
     uint8_t event_id;
@@ -25,8 +27,8 @@ typedef struct listen_s {
  * @param ssl_ctx The OpenSSL ctx which should contain a fully built cert
  *                chain and also be otherwise initialized.
  */
-void handle_accept(listen_t *listen, int epollfd, uint32_t events,
-                   void *ssl_ctx);
+tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
+                        void *ssl_ctx);
 
 /**
  * @brief Makes a connection ctx for a listen socket.

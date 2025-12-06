@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "errors.h"
+
 
 typedef enum event_id_s {
     EV_LISTEN,
@@ -14,7 +16,7 @@ typedef struct event_s {
 } event_t;
 
 
-void dispatch_events(event_t *ev, int epollfd, uint32_t events,
+tpx_err_t dispatch_events(event_t *ev, int epollfd, uint32_t events,
                           void *ssl_ctx);
 
 #endif

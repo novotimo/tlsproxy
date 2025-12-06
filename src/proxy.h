@@ -57,8 +57,8 @@ typedef struct proxy_s {
 typedef struct listen_s listen_t;
 
 
-void handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
-                  void *ssl_ctx, uint8_t tag);
+tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
+                       void *ssl_ctx, uint8_t tag);
 proxy_t *create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
                       struct sockaddr const* server_addr,
                       socklen_t server_addrlen);
@@ -72,7 +72,7 @@ tpx_err_t proxy_process_data(proxy_t *proxy, int is_client);
 
 // When you want to close a proxy, keep calling this on each
 // epoll event and the events will eventually stop
-void proxy_close(proxy_t *proxy, int epollfd);
+tpx_err_t proxy_close(proxy_t *proxy, int epollfd);
 
 
 #endif

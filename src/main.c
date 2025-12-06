@@ -16,11 +16,19 @@
 #define TPX_NARGS 2
 #define TPX_ARG_CONFFILE 1
 
+// Hash table stuff to quickly lookup freed events
+#define NAME closed
+#define KEY_TY uint64_t
+#define HASH_FN vt_hash_integer
+#define CMPR_FN vt_cmpr_integer
+#include "verstable.h"
+
 
 void usage(const char *prog);
 void main_loop(int epollfd, SSL_CTX *ssl_ctx);
 tpx_config_t *load_config(const char *conf_file);
 void start_listeners(tpx_config_t *config, int epollfd);
+static inline uint64_t del_tag(void *ptr);
 
 SSL_CTX *init_openssl(tpx_config_t *config);
 void load_servcert(tpx_config_t *config, SSL_CTX *ctx);
@@ -33,6 +41,11 @@ static const cyaml_config_t cyaml_config = {
     .mem_fn = cyaml_mem,
     .log_level = CYAML_LOG_WARNING,
 };
+
+static inline uint64_t del_tag(void *ptr) {
+    return (uint64_t)ptr & ~(uint64_t)0x3;
+}
+
 
 
 void usage(const char *pname) {
@@ -66,12 +79,28 @@ int main(int argc, char *argv[]) {
 
 void main_loop(int epollfd, SSL_CTX *ssl_ctx) {
     struct epoll_event events[TPX_MAX_EVENTS];
+    closed closed_set;
+    closed_init(&closed_set);
     
     for (;;) {
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
-        for (size_t n=0; n < nfds; ++n)
-            dispatch_events(events[n].data.ptr, epollfd, events[n].events,
-                            ssl_ctx);
+        for (size_t n=0; n < nfds; ++n) {
+            closed_itr it = closed_get(&closed_set,
+                                       del_tag(events[n].data.ptr));
+            if (!closed_is_end(it))
+                continue;
+            
+            tpx_err_t ev_ret = dispatch_events(events[n].data.ptr, epollfd,
+                                               events[n].events, ssl_ctx);
+            if (ev_ret == TPX_CLOSED) {
+                it = closed_insert(&closed_set, del_tag(events[n].data.ptr));
+                if (closed_is_end(it)) {
+                    errx(EXIT_FAILURE, "main_loop: Ran out of memory for "
+                         "hash table");
+                }
+            }
+        }
+        closed_clear(&closed_set);
     }
 }
 
