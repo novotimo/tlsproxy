@@ -12,15 +12,14 @@
 #include "proxy.h"
 
 
-#define TPX_MAX_EVENTS 100
-#define TPX_NARGS 2
-#define TPX_ARG_CONFFILE 1
+#define TPX_MAX_EVENTS 100 /**< @brief The maximum number of events in epoll */
+#define TPX_NARGS 2 /**< @brief The number of arguments to this program */
+#define TPX_ARG_CONFFILE 1 /**< @brief The config file argument */
 
-// Hash table stuff to quickly lookup freed events
-#define NAME closed
-#define KEY_TY uint64_t
-#define HASH_FN vt_hash_integer
-#define CMPR_FN vt_cmpr_integer
+#define NAME closed /**< @brief The name of the hash set */
+#define KEY_TY uint64_t /**< @brief The key type of the hash set */
+#define HASH_FN vt_hash_integer /**< @brief The hash function of */
+#define CMPR_FN vt_cmpr_integer /**< @brief The compare function */
 #include "verstable.h"
 
 
@@ -42,17 +41,19 @@ static const cyaml_config_t cyaml_config = {
     .log_level = CYAML_LOG_WARNING,
 };
 
+/** @brief Delete the 2-bit tag from a tagged pointer */
 static inline uint64_t del_tag(void *ptr) {
     return (uint64_t)ptr & ~(uint64_t)0x3;
 }
 
 
-
+/** @brief Get usage and exit */
 void usage(const char *pname) {
     fprintf(stderr, "Usage: %s <config.yml>\n", pname);
     exit(EXIT_FAILURE);
 }
 
+/** @brief Inits OpenSSL and epoll then passes to main loop */
 int main(int argc, char *argv[]) {
     printf("TLS Proxy starting\n");
     
@@ -77,6 +78,7 @@ int main(int argc, char *argv[]) {
     return(EXIT_SUCCESS);
 }
 
+/** @brief The main loop waits on epoll and dispatches events */
 void main_loop(int epollfd, SSL_CTX *ssl_ctx) {
     struct epoll_event events[TPX_MAX_EVENTS];
     closed closed_set;
@@ -104,6 +106,7 @@ void main_loop(int epollfd, SSL_CTX *ssl_ctx) {
     }
 }
 
+/** @brief Loads and validates the config file */
 tpx_config_t *load_config(const char *config_file) {
     tpx_config_t *tpx_config;
     cyaml_err_t conf_err = cyaml_load_file(config_file,
@@ -118,6 +121,7 @@ tpx_config_t *load_config(const char *config_file) {
     return tpx_config;
 }
 
+/** @brief Start the listener sockets (only one for now) */
 void start_listeners(tpx_config_t *tpx_config, int epollfd) {
     listen_t *listener = create_listener(tpx_config->listen_ip,
                                          tpx_config->listen_port,
@@ -131,6 +135,7 @@ void start_listeners(tpx_config_t *tpx_config, int epollfd) {
         err(EXIT_FAILURE, "epoll_ctl: listen_sock");
 }
 
+/** @brief Inits SSL_CTX for use as a TLS server, loading certs */
 SSL_CTX *init_openssl(tpx_config_t *config) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (ctx == NULL) {
@@ -189,6 +194,7 @@ SSL_CTX *init_openssl(tpx_config_t *config) {
     return ctx;
 }
 
+/** @brief Load the server certificate into the SSL_CTX */
 void load_servcert(tpx_config_t *config, SSL_CTX *ctx) {
     BIO *leaf_bio = BIO_new_file(config->servcert, "r");
     X509 *leaf = NULL;
@@ -208,6 +214,7 @@ void load_servcert(tpx_config_t *config, SSL_CTX *ctx) {
     }
 }
 
+/** @brief Load the CA certificates into the SSL_CTX */
 void load_cacerts(tpx_config_t *config, SSL_CTX *ctx) {
     X509_STORE *store = X509_STORE_new();
     X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
@@ -219,6 +226,7 @@ void load_cacerts(tpx_config_t *config, SSL_CTX *ctx) {
     SSL_CTX_set_cert_store(ctx, store);
 }
 
+/** @brief Load the server private key into the SSL_CTX */
 void load_servkey(tpx_config_t *config, SSL_CTX *ctx) {
     BIO *pkey_bio = BIO_new_file(config->servkey, "r");
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(pkey_bio, NULL, NULL,

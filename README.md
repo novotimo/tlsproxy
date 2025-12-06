@@ -1,4 +1,4 @@
-# TLS Proxy
+# TLS Proxy README
 
 This is an event-based TLS proxy server inspired by nginx. It is based on `epoll()` and so is currently Linux-only, and I currently don't plan to extend it to similar platforms that provide similar interfaces. I may possibly change my mind.
 

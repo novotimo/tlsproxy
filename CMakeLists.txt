@@ -17,6 +17,9 @@ find_package(Doxygen
 if(DOXYGEN_FOUND)
   set(DOXYGEN_HTML_OUTPUT ${PROJECT_BINARY_DIR}/docs)
   set(DOXYGEN_GENERATE_HTML YES)
+  list(APPEND DOXYGEN_EXCLUDE_PATTERNS verstable.h doc)
+  set(DOXYGEN_OPTIMIZE_OUTPUT_FOR_C YES)
+  set(DOXYGEN_EXTRACT_ALL YES)
   doxygen_add_docs(docs
     ${PROJECT_SOURCE_DIR}
     ALL

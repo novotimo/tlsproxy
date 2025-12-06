@@ -3,19 +3,26 @@
 
 #include <cyaml/cyaml.h>
 
+/** @brief The configuration of the TLS Proxy */
 typedef struct tpx_config {
-    const char *target_ip;
-    unsigned int target_port;
+    const char *target_ip; /**< @brief The IP address of the upstream server. */
+    unsigned int target_port; /**< @brief The port of the upstream service. */
 
-    const char *listen_ip;
-    unsigned int listen_port;
+    const char *listen_ip; /**< @brief The local IP address to listen on. */
+    unsigned int listen_port; /**< @brief The port to listen on. */
 
-    const char **cacerts;
-    unsigned int cacerts_count;
-    const char *cert_chain;
-    const char *servcert;
-    const char *servkey;
-    const char *servkeypass;
+    const char **cacerts; /**< @brief The CA certificates used to verify the
+                           * server certificate. */
+    unsigned int cacerts_count; /**< @brief The number of CA certificates
+                                 * provided */
+    const char *cert_chain; /**< @brief A file containing the whole chain from
+                             * leaf to root, and it must be in that order. */
+    const char *servcert; /**< @brief The server certificate to offer to
+                           * clients. */
+    const char *servkey; /**< @brief The private key of the server certificate
+                          */
+    const char *servkeypass; /**< @brief The encryption password for the server
+                              * key */
 } tpx_config_t;
 
 
@@ -59,6 +66,12 @@ static const cyaml_schema_value_t top_schema = {
         CYAML_FLAG_POINTER, tpx_config_t, top_mapping_schema),
 };
 
+/** Validate the configuration file, checking that cacerts and cert-chain
+ * aren't both configured together.
+ *
+ * @param config The configuration object
+ * @return Returns TPX_FAILURE on failure and TPX_SUCCESS on success.
+ */
 int tpx_validate_conf(tpx_config_t *config);
 
 #endif

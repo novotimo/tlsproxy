@@ -74,6 +74,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
         fprintf(stderr, "Couldn't add sockets to epoll, not making proxy\n");
         return TPX_FAILURE;
     }
+    return retval;
 }
 
 listen_t *create_listener(const char *lhost, const unsigned short lport,
