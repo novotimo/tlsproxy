@@ -1,6 +1,7 @@
 #include "listen.h"
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <err.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -21,6 +22,8 @@ tpx_err_t get_conn(const char *host, const unsigned short port,
 
 tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
                          void *ssl_ctx) {
+    assert(listen->event_id == EV_LISTEN);
+    
     struct sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
     int conn_sock = accept(listen->fd, (struct sockaddr *) &addr,
@@ -58,12 +61,12 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
 
     // Programmer beware: Make 100% sure that addr gets copied into the proxy
     // ctx rather than just its pointer.
-    proxy_t *proxy = create_proxy(conn_sock, listen, ssl,
+    proxy_t *proxy = create_proxy(conn_sock, ssl,
                                   (struct sockaddr *)&listen->peer_addr,
                                   listen->peer_addrlen);
     if (!proxy) {
         SSL_free(ssl);
-        fprintf(stderr, "Couldn't create proxy\n");
+        fprintf(stderr, "handle_accept: Couldn't create proxy\n");
         return TPX_FAILURE;
     }
 
@@ -71,7 +74,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
     if (retval == TPX_FAILURE) {
         // Need to call with epollfd=-1 to show that the sockets aren't in epoll
         proxy_close(proxy, -1);
-        fprintf(stderr, "Couldn't add sockets to epoll, not making proxy\n");
+        fprintf(stderr, "handle_accept: Couldn't add sockets to epoll, not making proxy\n");
         return TPX_FAILURE;
     }
     return retval;
@@ -86,10 +89,8 @@ listen_t *create_listener(const char *lhost, const unsigned short lport,
 
     
     listen_t *listen = malloc(sizeof(listen_t));
-    if (!listen) {
-        perror("create_listener: malloc");
-        return NULL;
-    }
+    if (!listen)
+        err(EXIT_FAILURE, "create_listener: malloc");
 
     listen->event_id = EV_LISTEN;
     listen->fd = lsock;
@@ -99,7 +100,7 @@ listen_t *create_listener(const char *lhost, const unsigned short lport,
     if (ret == TPX_FAILURE) {
         close(lsock);
         free(listen);
-        return NULL;
+        errx(EXIT_FAILURE, "create_listener: Couldn't make listener");
     }
 
     return listen;
@@ -118,8 +119,8 @@ int bind_listen_sock(const char *host, const unsigned short port) {
     struct addrinfo *listen_addr, *lp;
     int gai_err = getaddrinfo(host, service, &hints, &listen_addr);
     if (gai_err != 0)
-        errx(EXIT_FAILURE, "getaddrinfo for listener: %s",
-             gai_strerror(gai_err));
+        errx(EXIT_FAILURE, "bind_listen_sock: getaddrinfo (%s:%d): %s",
+             host, port, gai_strerror(gai_err));
 
     int fd = -1;
     int opt = 0;
@@ -170,7 +171,8 @@ tpx_err_t get_conn(const char *host, const unsigned short port,
     struct addrinfo *connect_addr;
     int error = getaddrinfo(host, service, &hints, &connect_addr);
     if (error != 0) {
-        fprintf(stderr, "getaddrinfo for listener: %s\n", gai_strerror(error));
+        fprintf(stderr, "getaddrinfo for listener (%s:%hu) failed: %s\n",
+                host, port, gai_strerror(error));
         return TPX_FAILURE;
     }
 

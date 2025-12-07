@@ -17,10 +17,9 @@
 #include "queue.h"
 
 int create_connect(proxy_t *proxy);
-tpx_err_t proxy_handle_connect(proxy_t *proxy);
 
 
-proxy_t *create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
+proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       struct sockaddr const* server_addr,
                       socklen_t server_addrlen) {
     proxy_t *proxy = malloc(sizeof(proxy_t));

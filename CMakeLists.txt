@@ -21,10 +21,9 @@ set_target_properties(cyaml PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "/usr/local/include"
 )
 
-
-add_library(proxylib)
-target_include_directories(proxylib PRIVATE inc)
-target_sources(proxylib
+add_library(proxy)
+target_include_directories(proxy PRIVATE inc)
+target_sources(proxy
   PRIVATE
   src/config.c
   src/event.c
@@ -35,7 +34,7 @@ target_sources(proxylib
 
 add_executable(tlsproxy)
 
-target_link_libraries(tlsproxy OpenSSL::SSL OpenSSL::Crypto cyaml proxylib)
+target_link_libraries(tlsproxy OpenSSL::SSL OpenSSL::Crypto cyaml proxy)
 target_sources(tlsproxy
   PRIVATE
   app/main.c
@@ -43,10 +42,11 @@ target_sources(tlsproxy
 target_include_directories(tlsproxy PRIVATE inc)
 
 if (UNIT_TESTING)
-  find_package(cmocka 1.1.8 REQUIRED)
+  # This is actually 2.0.0 but they forgot to version bump
+  find_package(cmocka 1.9.0 REQUIRED)
   include(AddCMockaTest)
   add_subdirectory(test)
-  append_coverage_compiler_flags()
+  #append_coverage_compiler_flags()
 else()
   
   # Doxygen

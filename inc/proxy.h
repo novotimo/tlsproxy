@@ -58,7 +58,6 @@ typedef struct proxy_s {
     proxy_state_t state; /**< @brief The current proxy state */
 } proxy_t;
 
-typedef struct listen_s listen_t;
 
 /**
  * @brief Handle a proxy event.
@@ -95,7 +94,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
  * @param server_addrlen The address length of server_addr.
  * @return A pointer to a valid proxy_t if successful, NULL if not.
  */
-proxy_t *create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
+proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       struct sockaddr const* server_addr,
                       socklen_t server_addrlen);
 

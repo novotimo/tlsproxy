@@ -9,6 +9,38 @@
 #include <string.h>
 
 
+void *__real_malloc(const size_t size);
+void *__wrap_malloc(const size_t size) {
+    if (has_mock())
+        return (void *)mock();
+    else
+        return __real_malloc(size);
+}
+
+void *__real_calloc(size_t n, size_t size);
+void *__wrap_calloc(size_t n, size_t size) {
+    if (has_mock())
+        return (void *)mock();
+    else
+        return __real_calloc(n, size);
+}
+
+/* If we fail to allocate a queue, return NULL */
+static void new_queue(void **state) {
+    will_return(__wrap_calloc, NULL);
+    bufq_t *q = queue_new();
+    assert_null(q);
+}
+
+/* If we fail to make a new member in the queue, return TPX_FAILURE */
+static void enqueue_fail(void **state) {
+    bufq_t *q = queue_new();
+    assert_non_null(q);
+    will_return(__wrap_malloc, NULL);
+    assert_int_equal(enqueue(q,NULL,0),TPX_FAILURE);
+    
+    queue_free(q);
+}
 
 /* This is what a new queue should look like. */
 static void new_queue_valid(void **state) {

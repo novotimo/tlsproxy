@@ -50,4 +50,29 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
 listen_t *create_listener(const char *lhost, const unsigned short lport,
                           const char *thost, const unsigned short tport);
 
+/**
+ * @brief Creates a socket and binds to it
+ * @param host The hostname or IP address of the local interface to
+ *        bind to. This can be 0.0.0.0 or ::0 to bind to all addresses.
+ * @param port The port to bind to.
+ * @return The socket we've bound to. If no socket could be bound, just exit.
+ */
+int bind_listen_sock(const char *host, const unsigned short port);
+
+/**
+ * @brief Resolves a remote host into a struct sockaddr
+ *
+ * This is meant for remote hosts, don't use this to resolve a local
+ * address to listen on.
+ * @param host The hostname to resolve, though it can be an IP address too.
+ * @param port The port of the service to connect to.
+ * @param addr[out] We put the resolved info in to here. Make sure there's
+ *        enough space in it, we'll assume the underlying allocated type is
+ *        `struct sockaddr_storage`.
+ * @param len[out] The length of the socket address written to addr.
+ * @return TPX_FAILURE on failure or TPX_SUCCESS on success
+ */
+tpx_err_t get_conn(const char *host, const unsigned short port,
+                   struct sockaddr *addr, socklen_t *len);
+
 #endif
