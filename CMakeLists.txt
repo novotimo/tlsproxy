@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.23)
 
 project(TLSProxy)
 
+if (UNIT_TESTING)
+  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
+  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/coverage)
+
+  include(CodeCoverage)
+  add_compile_definitions(UNIT_TESTING)
+  add_compile_options(-O0)
+endif()
+
+
 find_package(OpenSSL REQUIRED)
 
 # CYaml
@@ -11,23 +21,6 @@ set_target_properties(cyaml PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "/usr/local/include"
 )
 
-# Doxygen
-find_package(Doxygen
-  OPTIONAL dot
-  OPTIONAL_COMPONENTS mscgen dia
-)
-if(DOXYGEN_FOUND)
-  set(DOXYGEN_HTML_OUTPUT ${PROJECT_BINARY_DIR}/docs)
-  set(DOXYGEN_GENERATE_HTML YES)
-  list(APPEND DOXYGEN_EXCLUDE_PATTERNS verstable.h doc)
-  set(DOXYGEN_OPTIMIZE_OUTPUT_FOR_C YES)
-  set(DOXYGEN_EXTRACT_ALL YES)
-  doxygen_add_docs(docs
-    ${PROJECT_SOURCE_DIR}
-    ALL
-    COMMENT "Generate Doxygen docs"
-  )
-endif(DOXYGEN_FOUND)
 
 add_library(proxylib)
 target_include_directories(proxylib PRIVATE inc)
@@ -49,11 +42,30 @@ target_sources(tlsproxy
 )
 target_include_directories(tlsproxy PRIVATE inc)
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
 if (UNIT_TESTING)
   find_package(cmocka 1.1.8 REQUIRED)
   include(AddCMockaTest)
   add_subdirectory(test)
+  append_coverage_compiler_flags()
+else()
+  
+  # Doxygen
+  find_package(Doxygen
+    OPTIONAL dot
+    OPTIONAL_COMPONENTS mscgen dia
+  )
+  if(DOXYGEN_FOUND)
+    set(DOXYGEN_HTML_OUTPUT ${PROJECT_BINARY_DIR}/docs)
+    set(DOXYGEN_GENERATE_HTML YES)
+    list(APPEND DOXYGEN_EXCLUDE_PATTERNS verstable.h doc)
+    set(DOXYGEN_OPTIMIZE_OUTPUT_FOR_C YES)
+    set(DOXYGEN_EXTRACT_ALL YES)
+    doxygen_add_docs(docs
+      ${PROJECT_SOURCE_DIR}
+      ALL
+      COMMENT "Generate Doxygen docs"
+    )
+  endif(DOXYGEN_FOUND)
 endif()
 
 #target_compile_options(tlsproxy

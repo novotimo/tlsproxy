@@ -3,6 +3,13 @@
 
 #include <stdlib.h>
 
+#ifdef UNIT_TESTING
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <cmocka.h>
+#endif
+
 #include "errors.h"
 
 

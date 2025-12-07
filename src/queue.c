@@ -5,6 +5,7 @@
 #include "errors.h"
 
 
+
 tpx_err_t check_consistency(bufq_t *queue);
 
 
@@ -120,6 +121,12 @@ bufq_t *queue_new() {
 
 void queue_free(bufq_t *queue) {
     if (queue) {
+        // If the queue is broken, we take the memory leak in exchange for
+        // no double frees
+        if (check_consistency(queue) != TPX_SUCCESS) {
+            return free(queue);
+        }
+
         unsigned char *buf;
         while(!queue_empty(queue)) {
             dequeue(queue, &buf, NULL);
