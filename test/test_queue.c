@@ -8,22 +8,17 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "macros.h"
 
-void *__real_malloc(const size_t size);
-void *__wrap_malloc(const size_t size) {
-    if (has_mock())
-        return (void *)mock();
-    else
-        return __real_malloc(size);
-}
 
-void *__real_calloc(size_t n, size_t size);
-void *__wrap_calloc(size_t n, size_t size) {
-    if (has_mock())
-        return (void *)mock();
-    else
-        return __real_calloc(n, size);
-}
+// Wrap functions for mocking
+#define WRAPPED_FUNCS \
+    WRAP_FUN(malloc, void *, (const size_t size), (size))               \
+    WRAP_FUN(calloc, void *, (size_t n, size_t size), (n, size))
+
+WRAPPED_FUNCS
+#undef WRAP_FUN
+
 
 /* If we fail to allocate a queue, return NULL */
 static void new_queue(void **state) {
@@ -240,6 +235,8 @@ static void free_inconsistent(void **state) {
 
 int main(void) {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test(new_queue),
+        cmocka_unit_test(enqueue_fail),
         cmocka_unit_test(new_queue_valid),
         cmocka_unit_test(buf_returned_unmolested),
         cmocka_unit_test(empty_queues),

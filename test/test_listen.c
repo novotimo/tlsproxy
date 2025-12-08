@@ -13,37 +13,40 @@
 
 #include "event.h"
 #include "proxy.h"
+#include "macros.h"
+
 
 static listen_t goodevent = {
     .event_id = EV_LISTEN,
     .fd = 7
 };
 
-proxy_t *__real_create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
-                             struct sockaddr const* server_addr,
-                             socklen_t server_addrlen);
-proxy_t *__wrap_create_proxy(int accepted_fd, listen_t *listen, SSL *ssl,
-                             struct sockaddr const* server_addr,
-                             socklen_t server_addrlen) {
-    return (proxy_t *) mock();
-}
 
-void __real_proxy_close(proxy_t *proxy, int epollfd);
-void __wrap_proxy_close(proxy_t *proxy, int epollfd) {
-    return;
-}
-
-tpx_err_t __real_proxy_add_to_epoll(proxy_t *proxy, int epollfd);
-tpx_err_t __wrap_proxy_add_to_epoll(proxy_t *proxy, int epollfd) {
-    return (int) mock();
-}
-
-int __real_accept(int sockfd, struct sockaddr  addr,
-                  socklen_t addrlen);
-int __wrap_accept(int sockfd, struct sockaddr addr,
-                  socklen_t addrlen) {
-    return (int) mock();
-}
+#define WRAPPED_FUNCS \
+    WRAP_FUN(create_proxy, proxy_t *, \
+             (int accepted_fd, listen_t *listen, SSL *ssl,              \
+              struct sockaddr const* server_addr, socklen_t server_addrlen), \
+             (accepted_fd, listen, ssl, server_addr, server_addrlen)) \
+    WRAP_FUN(proxy_add_to_epoll, tpx_err_t, (proxy_t *proxy, int epollfd), \
+             (proxy, epollfd)) \
+    WRAP_FUN(proxy_close, void, (proxy_t *proxy,int epollfd), (proxy,epollfd)) \
+    WRAP_FUN(accept, int, \
+             (int sockfd, struct sockaddr *addr, socklen_t addrlen), \
+                 (sockfd, addr, addrlen)) \
+    WRAP_FUN(SSL_new, SSL *, (SSL_CTX *ctx), (ctx)) \
+    WRAP_FUN(SSL_free, void, (SSL *ssl), (ssl)) \
+    WRAP_FUN(SSL_set_accept_state, void, (SSL *ssl), (ssl)) \
+    WRAP_FUN(SSL_set_fd, int, (SSL *ssl, int fd), (ssl, fd)) \
+    WRAP_FUN(socket, int, (int domain, int type, int protocol), \
+             (domain, type, protocol))                          \
+    WRAP_FUN(listen, int, (int sockfd, int backlog), (sockfd, backlog)) \
+    WRAP_FUN(setsockopt, int, \
+             (int s, int l, int o, const void *ov, socklen_t ol),       \
+             (s,l,o,ov,ol)) \
+    WRAP_FUN(malloc, void *, (const size_t size), (size))
+        
+WRAPPED_FUNCS
+#undef WRAP_FUN
 
 int __real_fcntl(int fd, int op, ...);
 int __wrap_fcntl(int fd, int op, ...) {
@@ -59,26 +62,6 @@ int __wrap_fcntl(int fd, int op, ...) {
     }
 }
 
-SSL *__real_SSL_new(SSL_CTX *ctx);
-SSL *__wrap_SSL_new(SSL_CTX *ctx) {
-    return (SSL *) mock();
-}
-
-void __real_SSL_free(SSL *ssl);
-void __wrap_SSL_free(SSL *ssl) {
-    return;
-}
-
-void __real_SSL_set_accept_state(SSL *ssl);
-void __wrap_SSL_set_accept_state(SSL *ssl) {
-    return;
-}
-
-int __real_SSL_set_fd(SSL *ssl, int fd);
-int __wrap_SSL_set_fd(SSL *ssl, int fd) {
-    return (int) mock();
-}
-
 void __real_errx(int eval, const char *fmt, ...);
 void __wrap_errx(int eval, const char *fmt, ...) {
     mock_assert(false,"errx",__FILE__,__LINE__);
@@ -87,37 +70,6 @@ void __wrap_errx(int eval, const char *fmt, ...) {
 void __real_err(int eval, const char *fmt, ...);
 void __wrap_err(int eval, const char *fmt, ...) {
     mock_assert(false,"err",__FILE__,__LINE__);
-}
-
-int __real_socket(int domain, int type, int protocol);
-int __wrap_socket(int domain, int type, int protocol) {
-    if (has_mock())
-        return (int)mock();
-    return __real_socket(domain,type,protocol);
-}
-
-int __real_listen(int sockfd, int backlog);
-int __wrap_listen(int sockfd, int backlog) {
-    if (has_mock())
-        return (int)mock();
-    return __real_listen(sockfd,backlog);
-}
-
-int __real_setsockopt(int sockfd, int level, int optname,
-                      const void *optval, socklen_t optlen);
-int __wrap_setsockopt(int sockfd, int level, int optname,
-                      const void *optval, socklen_t optlen) {
-    if (has_mock())
-        return (int)mock();
-    return __real_setsockopt(sockfd,level,optname,optval,optlen);
-}
-
-void *__real_malloc(const size_t size);
-void *__wrap_malloc(const size_t size) {
-    if (has_mock())
-        return (void *)mock();
-    else
-        return __real_malloc(size);
 }
 
 
@@ -156,6 +108,7 @@ static void test_handle_accept5(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_SSL_new, (SSL *)0x1);
     will_return(__wrap_SSL_set_fd, 0);
+    will_return(__wrap_SSL_free, NULL);
     assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
 }
 
@@ -166,7 +119,9 @@ static void test_handle_accept6(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_SSL_new, (SSL *)0x1);
     will_return(__wrap_SSL_set_fd, 1);
+    will_return(__wrap_SSL_set_accept_state, NULL);
     will_return(__wrap_create_proxy, NULL);
+    will_return(__wrap_SSL_free, NULL);
     assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
 }
 
@@ -177,8 +132,10 @@ static void test_handle_accept7(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_SSL_new, (SSL *)0x1);
     will_return(__wrap_SSL_set_fd, 1);
+    will_return(__wrap_SSL_set_accept_state, NULL);
     will_return(__wrap_create_proxy, (proxy_t *)0x1);
     will_return(__wrap_proxy_add_to_epoll, TPX_FAILURE);
+    will_return(__wrap_proxy_close, NULL);
     assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
 }
 
@@ -188,6 +145,7 @@ static void test_handle_accept_success(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_SSL_new, (SSL *)0x1);
     will_return(__wrap_SSL_set_fd, 1);
+    will_return(__wrap_SSL_set_accept_state, NULL);
     will_return(__wrap_create_proxy, (proxy_t *)0x1);
     will_return(__wrap_proxy_add_to_epoll, TPX_SUCCESS);
     assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_SUCCESS);

@@ -35,7 +35,6 @@ static event_t badevent2 = {
 };
 
 
-
 /* Make sure we're always getting the right event ID, never a tagged pointer */
 tpx_err_t __wrap_handle_accept(listen_t *listen, int epollfd, uint32_t events,
                                void *ssl_ctx) {
@@ -63,6 +62,7 @@ tpx_err_t __wrap_handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
 void __wrap_errx(int eval, const char *fmt, ...) {
     assert(false);
 }
+
 
 event_t *tag(event_t *ev, uint8_t t) {
     return (event_t *)((uintptr_t) ev + t);

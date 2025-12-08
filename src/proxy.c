@@ -61,6 +61,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
 }
 
 int create_connect(proxy_t *proxy) {
+    assert(proxy);
     int conn_sock = socket(proxy->server_addr.ss_family, SOCK_STREAM, 0);
     if (conn_sock < 0) {
         perror("create_connect: socket");
@@ -125,17 +126,21 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
             SSL_free(proxy->ssl);
         proxy->ssl = NULL;
     } else if (proxy->state == PS_SERVER_DISCONNECTED) {
-        // If the shutdown isn't done yet
-        if (SSL_shutdown(proxy->ssl) == 0)
-            return TPX_AGAIN;
-        SSL_free(proxy->ssl);
+        if (proxy->ssl) {
+            // If the shutdown isn't done yet
+            if (SSL_shutdown(proxy->ssl) == 0)
+                return TPX_AGAIN;
+            SSL_free(proxy->ssl);
+            proxy->ssl = NULL;
+        }
     }
     
     if (epollfd != -1 && proxy->serv_fd != -1) {
         if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->serv_fd, NULL) == -1) {
             perror("proxy_close: epoll_ctl(serv)");
         }
-    } if (proxy->client_fd != -1) {
+    }
+    if (epollfd != -1 && proxy->client_fd != -1) {
         if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->client_fd, NULL) == -1) {
             perror("proxy_close: epoll_ctl(client)");
         }
@@ -171,7 +176,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         }
         // If we're the server socket we keep going
     case PS_READY:
-        if (0 != (events | EPOLLOUT))
+        assert(events);
+        if (0 != (events & EPOLLOUT))
             ret = proxy_handle_write(proxy, tag);
 
         if (ret != TPX_SUCCESS) {
@@ -182,7 +188,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             break;
         }
     
-        if (0 != (events | EPOLLIN))
+        if (0 != (events & EPOLLIN))
             ret = proxy_handle_read(proxy, tag);
         
         if (ret != TPX_SUCCESS) {
@@ -204,8 +210,9 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             return TPX_SUCCESS;
     }
 
-    // I don't see a code path here, but cppcheck wants it added.
-    return TPX_SUCCESS;
+    // This should actually be an assert
+    fprintf(stderr, "Corrupted event: proxy has wrong state %d\n", proxy->state);
+    return TPX_FAILURE;
 }
 
 tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
@@ -239,11 +246,11 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         // Use existing chunk
         switch (queue_peek_last(in_bufq, &rdbuf, &buflen)) {
         case TPX_FAILURE:
-            fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted\n",
+            fprintf(stderr, "proxy_handle_read: The queue @ 0x%p is corrupted\n",
                     in_bufq);
             return TPX_FAILURE;
         case TPX_EMPTY:
-            fprintf(stderr, "tpx_handle_read: The queue @ 0x%p is corrupted: "
+            fprintf(stderr, "proxy_handle_read: The queue @ 0x%p is corrupted: "
                     "in_bufq->write_idx isn't -1 with an empty queue\n",
                     in_bufq);
             return TPX_FAILURE;
@@ -253,8 +260,6 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         }
     }
 
-    
-    
     int nbytes = -1;
     while (buflen > in_bufq->write_idx &&
            ((nbytes = DO_READ(proxy->ssl, fd,
@@ -275,14 +280,11 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     assert(in_bufq->write_idx < TPX_NET_BUFSIZE);
     assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
 
-    if (is_client && (SSL_get_error(proxy->ssl, nbytes)
-                      != SSL_ERROR_WANT_READ)) {
+    if (is_client && SSL_get_error(proxy->ssl, nbytes) != SSL_ERROR_WANT_READ) {
         ERR_print_errors_fp(stderr);
         return TPX_CLOSED;
-    }
-
-    if (nbytes == -1 && errno != EAGAIN) {
-        perror("tpx_handle_read");
+    } else if (!is_client && nbytes == -1 && errno != EAGAIN) {
+        perror("proxy_handle_read");
         return TPX_CLOSED;
     }
 
@@ -339,11 +341,9 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     
         switch (queue_peek(out_bufq, &wbuf, &wbuflen)) {
         case TPX_FAILURE:
-            fprintf(stderr, "tpx_handle_write: The queue @ 0x%p is corrupted\n",
+            fprintf(stderr, "proxy_handle_write: The queue @ 0x%p is corrupted\n",
                     out_bufq);
             return TPX_FAILURE;
-        case TPX_EMPTY:
-            return TPX_SUCCESS;
         case TPX_SUCCESS:
         default:
             assert(wbuf);
@@ -371,12 +371,21 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
                 // end of the chunk currently being written
                 return TPX_SUCCESS;
             }
-            
-            if (nsent == -1 && errno == EAGAIN) {
-                return TPX_SUCCESS;
-            } else if (nsent == -1 && errno != EAGAIN) {
-                perror("tpx_handle_write");
+
+            if (is_client) {
+                int sslerr = SSL_get_error(proxy->ssl, nsent);
+                if (sslerr == SSL_ERROR_NONE)
+                    continue;
+                if (sslerr == SSL_ERROR_WANT_WRITE)
+                    return TPX_SUCCESS;
+                ERR_print_errors_fp(stderr);
                 return TPX_CLOSED;
+            } else if (nsent == -1) {
+                if (errno != EAGAIN) {
+                    perror("proxy_handle_write");
+                    return TPX_CLOSED;
+                }
+                return TPX_SUCCESS;
             }
         }
 

@@ -46,7 +46,7 @@ if (UNIT_TESTING)
   find_package(cmocka 1.9.0 REQUIRED)
   include(AddCMockaTest)
   add_subdirectory(test)
-  #append_coverage_compiler_flags()
+  append_coverage_compiler_flags()
 else()
   
   # Doxygen

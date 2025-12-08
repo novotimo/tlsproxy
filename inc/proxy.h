@@ -157,5 +157,10 @@ tpx_err_t proxy_process_data(proxy_t *proxy, int is_client);
  */
 tpx_err_t proxy_close(proxy_t *proxy, int epollfd);
 
+/** @brief Create a nonblocking socket to connect to. */
+int create_connect(proxy_t *proxy);
+
+/** @brief Do we have any queued data to send? */
+int outbuf_empty(proxy_t *proxy, int is_client);
 
 #endif
