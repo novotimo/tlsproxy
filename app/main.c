@@ -1,6 +1,8 @@
+#include <assert.h>
 #include <err.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/ssl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/epoll.h>
@@ -9,7 +11,9 @@
 #include "errors.h"
 #include "event.h"
 #include "listen.h"
+#include "ngx_rbtree.h"
 #include "proxy.h"
+#include "timeutils.h"
 
 
 #define TPX_MAX_EVENTS 100 /**< @brief The maximum number of events in epoll */
@@ -24,7 +28,7 @@
 
 
 void usage(const char *prog);
-void main_loop(int epollfd, SSL_CTX *ssl_ctx);
+void main_loop(int epollfd, SSL_CTX *ssl_ctx, unsigned int conn_timeout);
 tpx_config_t *load_config(const char *conf_file);
 void start_listeners(tpx_config_t *config, int epollfd);
 static inline uint64_t del_tag(void *ptr);
@@ -73,19 +77,44 @@ int main(int argc, char *argv[]) {
 
     start_listeners(tpx_config, epollfd);
 
-    main_loop(epollfd, ssl_ctx);
+    main_loop(epollfd, ssl_ctx, tpx_config->connect_timeout);
 
     return(EXIT_SUCCESS);
 }
 
 /** @brief The main loop waits on epoll and dispatches events */
-void main_loop(int epollfd, SSL_CTX *ssl_ctx) {
+void main_loop(int epollfd, SSL_CTX *ssl_ctx, unsigned int conn_timeout) {
     struct epoll_event events[TPX_MAX_EVENTS];
     closed closed_set;
     closed_init(&closed_set);
+
+    proxy_init_timeouts();
     
     for (;;) {
-        int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
+        // Get min timeout
+        int notimeouts = 0;
+        int next_timeout = -1;
+        while (!notimeouts) {
+            if (timeouts.root == timeouts.sentinel) {
+                notimeouts = 1;
+                break;
+            }
+            
+            ngx_rbtree_node_t *timeout = ngx_rbtree_min(timeouts.root,
+                                                        timeouts.sentinel);
+            if (timeout_expired(timeout->key)) {
+                proxy_t *proxy = ngx_rbtree_data(timeout, proxy_t, timer);
+                // We get deleted from the rbtree in here
+                proxy_handle_timeout(proxy, epollfd);
+            } else {
+                // timeout->key - gettime() >= 0 (from !timeout_expired),
+                // and we don't create timeouts that are big enough to fill ints
+                next_timeout = (int)(timeout->key - gettime());
+                notimeouts = 1;
+            }
+        }
+        
+        int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, next_timeout);
         for (size_t n=0; n < nfds; ++n) {
             closed_itr it = closed_get(&closed_set,
                                        del_tag(events[n].data.ptr));
@@ -93,7 +122,8 @@ void main_loop(int epollfd, SSL_CTX *ssl_ctx) {
                 continue;
             
             tpx_err_t ev_ret = dispatch_events(events[n].data.ptr, epollfd,
-                                               events[n].events, ssl_ctx);
+                                               events[n].events, ssl_ctx,
+                                               conn_timeout);
             if (ev_ret == TPX_CLOSED) {
                 it = closed_insert(&closed_set, del_tag(events[n].data.ptr));
                 if (closed_is_end(it)) {

@@ -25,5 +25,16 @@ int tpx_validate_conf(struct tpx_config *config) {
         return TPX_FAILURE;
     }
 
+    if (config->listen_port > UINT16_MAX) {
+        fprintf(stderr, "Config error: 'listen_port' must be a valid port "
+                "number\n");
+        return TPX_FAILURE;
+    }
+    
+    if (config->target_port > UINT16_MAX) {
+        fprintf(stderr, "Config error: 'listen_port' must be a valid port "
+                "number\n");
+        return TPX_FAILURE;
+    }
     return TPX_SUCCESS;
 }

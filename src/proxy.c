@@ -15,13 +15,20 @@
 #include "errors.h"
 #include "event.h"
 #include "queue.h"
+#include "timeutils.h"
+
+
+ngx_rbtree_t timeouts;
+static ngx_rbtree_node_t sentinel;
+
 
 int create_connect(proxy_t *proxy);
 
 
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       struct sockaddr const* server_addr,
-                      socklen_t server_addrlen) {
+                      socklen_t server_addrlen,
+                      unsigned int conn_timeout) {
     proxy_t *proxy = malloc(sizeof(proxy_t));
     if (!proxy) {
         perror("create_proxy: malloc");
@@ -38,7 +45,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
     proxy->state = PS_CLIENT_CONNECTED;
 
     proxy->serv_fd = create_connect(proxy);
-    tpx_err_t ret = proxy_handle_connect(proxy);
+    tpx_err_t ret = proxy_handle_connect(proxy, conn_timeout);
     if (ret == TPX_SUCCESS)
         proxy->state = PS_READY;
     else if (ret == TPX_AGAIN)
@@ -80,7 +87,7 @@ int create_connect(proxy_t *proxy) {
     return conn_sock;
 }
 
-tpx_err_t proxy_handle_connect(proxy_t *proxy) {
+tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
     assert(proxy->state == PS_CLIENT_CONNECTED ||
            proxy->state == PS_SERVER_CONNECTING);
     int retcode = connect(proxy->serv_fd,
@@ -90,8 +97,17 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy) {
         perror("proxy_handle_connect: connect");
         return TPX_FAILURE;
     } else if (retcode == -1 && errno == EINPROGRESS) {
+        if (proxy->state == PS_CLIENT_CONNECTED) {
+            // This is the first time we've tried this, need to set a timeout
+            // Hardcoded to 3 seconds for now
+            proxy->timer.key = gettime() + conn_timeout;
+            ngx_rbtree_insert(&timeouts, &proxy->timer);
+            proxy->timer_set = 1;
+        }
         return TPX_AGAIN;
     } else {
+        ngx_rbtree_delete(&timeouts, &proxy->timer);
+        proxy->timer_set = 0;
         return TPX_SUCCESS;
     }
 }
@@ -121,6 +137,10 @@ tpx_err_t proxy_add_to_epoll(proxy_t *proxy, int epollfd) {
 }
 
 tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
+    if (proxy->timer_set) {
+        ngx_rbtree_delete(&timeouts, &proxy->timer);
+        proxy->timer_set = 0;
+    }
     if (proxy->state == PS_CLIENT_DISCONNECTED) {
         if (proxy->ssl)
             SSL_free(proxy->ssl);
@@ -133,6 +153,10 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
             SSL_free(proxy->ssl);
             proxy->ssl = NULL;
         }
+    } else if (proxy->state == PS_SERVER_CONNECTING) {
+        if (proxy->ssl)
+            SSL_free(proxy->ssl);
+        proxy->ssl = NULL;
     }
     
     if (epollfd != -1 && proxy->serv_fd != -1) {
@@ -158,14 +182,14 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
 }
 
 tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
-                       void *ssl_ctx, uint8_t tag) {
+                       void *ssl_ctx, uint8_t tag, unsigned int conn_timeout) {
     tpx_err_t ret = TPX_SUCCESS;
 
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
     case PS_SERVER_CONNECTING:
         if (0 == (tag & 1)) {
-            ret = proxy_handle_connect(proxy);
+            ret = proxy_handle_connect(proxy, conn_timeout);
             if (ret == TPX_AGAIN)
                 proxy->state = PS_SERVER_CONNECTING;
             else if (ret == TPX_SUCCESS)
@@ -396,4 +420,12 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
         assert(!((out_bufq->first == out_bufq->last) &&
                  (out_bufq->write_idx < out_bufq->read_idx)));
     }
+}
+
+void proxy_init_timeouts() {
+    ngx_rbtree_init(&timeouts, &sentinel, &ngx_rbtree_insert_timer_value);
+}
+
+tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd) {
+    return proxy_close(proxy, epollfd);
 }

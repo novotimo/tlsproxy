@@ -22,7 +22,7 @@ set_target_properties(cyaml PROPERTIES
 )
 
 add_library(proxy)
-target_include_directories(proxy PRIVATE inc)
+target_include_directories(proxy PRIVATE inc external)
 target_sources(proxy
   PRIVATE
   src/config.c
@@ -30,6 +30,8 @@ target_sources(proxy
   src/listen.c
   src/proxy.c
   src/queue.c
+  src/timeutils.c
+  external/ngx_rbtree.c
 )
 
 add_executable(tlsproxy)
@@ -39,7 +41,7 @@ target_sources(tlsproxy
   PRIVATE
   app/main.c
 )
-target_include_directories(tlsproxy PRIVATE inc)
+target_include_directories(tlsproxy PRIVATE inc external)
 
 if (UNIT_TESTING)
   # This is actually 2.0.0 but they forgot to version bump

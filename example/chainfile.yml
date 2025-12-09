@@ -1,6 +1,8 @@
 target-ip: 127.0.0.1
 target-port: 8080
 
+connect-timeout: 5000
+
 listen-ip: 0.0.0.0
 listen-port: 8443
 

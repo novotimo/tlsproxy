@@ -21,7 +21,7 @@ tpx_err_t get_conn(const char *host, const unsigned short port,
                    struct sockaddr *addr, socklen_t *len);
 
 tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
-                         void *ssl_ctx) {
+                        void *ssl_ctx, unsigned int conn_timeout) {
     assert(listen->event_id == EV_LISTEN);
     
     struct sockaddr_storage addr;
@@ -63,7 +63,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
     // ctx rather than just its pointer.
     proxy_t *proxy = create_proxy(conn_sock, ssl,
                                   (struct sockaddr *)&listen->peer_addr,
-                                  listen->peer_addrlen);
+                                  listen->peer_addrlen, conn_timeout);
     if (!proxy) {
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");

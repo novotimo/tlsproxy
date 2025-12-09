@@ -7,6 +7,8 @@
 typedef struct tpx_config {
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
+    unsigned int connect_timeout; /**< @brief The timeout for connecting to
+                                   * the backend in milliseconds */
 
     const char *listen_ip; /**< @brief The local IP address to listen on. */
     unsigned int listen_port; /**< @brief The port to listen on. */
@@ -36,6 +38,8 @@ static const cyaml_schema_field_t top_mapping_schema[] = {
         0, CYAML_UNLIMITED),
     CYAML_FIELD_UINT(
         "target-port", CYAML_FLAG_DEFAULT, tpx_config_t, target_port),
+    CYAML_FIELD_UINT(
+        "connect-timeout", CYAML_FLAG_DEFAULT, tpx_config_t, connect_timeout),
     
     CYAML_FIELD_STRING_PTR(
         "listen-ip", CYAML_FLAG_POINTER, tpx_config_t, listen_ip,

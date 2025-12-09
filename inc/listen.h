@@ -31,7 +31,7 @@ typedef struct listen_s {
  * @return The outcome of handling the event, either TPX_SUCCESS or TPX_FAILURE.
  */
 tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
-                        void *ssl_ctx);
+                        void *ssl_ctx, unsigned int conn_timeout);
 
 /**
  * @brief Makes a connection ctx for a listen socket.

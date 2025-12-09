@@ -30,6 +30,6 @@ typedef struct event_s {
  *         or TPX_CLOSED (which indicates that the event data is freed).
  */
 tpx_err_t dispatch_events(event_t *ev, int epollfd, uint32_t events,
-                          void *ssl_ctx);
+                          void *ssl_ctx, unsigned int conn_timeout);
 
 #endif

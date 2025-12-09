@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 
 #include "errors.h"
+#include "ngx_rbtree.h"
 #include "queue.h"
 
 
@@ -16,6 +17,9 @@
 
 #define DO_SEND(ssl, fd, buf, bufsize) \
     is_client ? SSL_write(ssl,buf,bufsize) : send(fd,buf,bufsize,0)
+
+
+extern ngx_rbtree_t timeouts;
 
 
 /** @brief The proxy state, what else needs to be said? */
@@ -39,6 +43,9 @@ typedef enum proxy_state_e {
  * which socket an event that we receive from epoll refers to? Well, using
  * tagged pointers of course: if ptr & 1 == 1, it's an event on the client
  * fd, and if ptr & 1 == 0, it's on the server fd.
+ *
+ * To find out if the timer is set, just look at the state. The timer is only
+ * set in the PS_SERVER_CONNECTING state.
  */
 typedef struct proxy_s {
     uint8_t event_id; /**< @brief EV_PROXY */
@@ -53,6 +60,9 @@ typedef struct proxy_s {
 
     struct sockaddr_storage server_addr; /**< @brief Addr of backend server */
     socklen_t server_addrlen; /**< @brief Length of server_addr */
+
+    ngx_rbtree_node_t timer; /**< @brief The time when this event expires */
+    uint8_t timer_set;
 
     SSL *ssl; /**< @brief The SSL session context */
     proxy_state_t state; /**< @brief The current proxy state */
@@ -83,7 +93,7 @@ typedef struct proxy_s {
  *         or TPX_CLOSED (which indicates that the proxy_t is freed).
  */
 tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
-                       void *ssl_ctx, uint8_t tag);
+                       void *ssl_ctx, uint8_t tag, unsigned int conn_timeout);
 /**
  * @brief Create a proxy, put a connect socket in, and wait for connect.
  * @param accepted_fd The fd that we just received from a call to accept().
@@ -96,7 +106,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
  */
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       struct sockaddr const* server_addr,
-                      socklen_t server_addrlen);
+                      socklen_t server_addrlen,
+                      unsigned int conn_timeout);
 
 /**
  * @brief Add client and server sockets of proxy to epoll.
@@ -116,7 +127,7 @@ tpx_err_t proxy_add_to_epoll(proxy_t *proxy, int epollfd);
  * @return TPX_FAILURE on failure, TPX_AGAIN when we need to run this again
  *         (it would block), and TPX_SUCCESS when the connection is complete.
  */
-tpx_err_t proxy_handle_connect(proxy_t *proxy);
+tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout);
 
 /**
  * @brief Handle a read from the client or server socket.
@@ -162,5 +173,11 @@ int create_connect(proxy_t *proxy);
 
 /** @brief Do we have any queued data to send? */
 int outbuf_empty(proxy_t *proxy, int is_client);
+
+/** @brief Init the timeout rbtree */
+void proxy_init_timeouts();
+
+/** @brief Handle the proxy getting a timeout. */
+tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd);
 
 #endif
