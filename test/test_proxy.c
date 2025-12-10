@@ -45,8 +45,13 @@
              (q, buf, buflen)) \
     WRAP_FUN(queue_peek_last, int, \
              (bufq_t *q, unsigned char **buf, size_t *buflen),  \
-             (q, buf, buflen))
-
+             (q, buf, buflen)) \
+    WRAP_FUN(ngx_rbtree_delete, void, \
+             (ngx_rbtree_t *tree, ngx_rbtree_node_t *node),     \
+             (tree, node)) \
+    WRAP_FUN(ngx_rbtree_insert, void, \
+             (ngx_rbtree_t *tree, ngx_rbtree_node_t *node),     \
+             (tree, node))
 
 WRAPPED_FUNCS
 #undef WRAP_FUN
@@ -75,10 +80,11 @@ static void test_create_proxy(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
+    will_return(__wrap_ngx_rbtree_delete, NULL);
     
     struct sockaddr sa;
     proxy_t *p = create_proxy(accept_sock, ssl, (struct sockaddr *)&sa,
-                              sizeof(struct sockaddr));
+                              sizeof(struct sockaddr), 5);
     assert_non_null(p);
     assert_int_equal(p->event_id, EV_PROXY);
     assert_non_null(p->c2s);
@@ -100,10 +106,11 @@ static void test_create_proxy_again(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, EINPROGRESS);
+    will_return(__wrap_ngx_rbtree_insert, NULL);
     
     struct sockaddr sa;
     proxy_t *p = create_proxy(accept_sock, ssl, (struct sockaddr *)&sa,
-                              sizeof(struct sockaddr));
+                              sizeof(struct sockaddr), 5);
     assert_non_null(p);
     assert_int_equal(p->event_id, EV_PROXY);
     assert_non_null(p->c2s);
@@ -113,6 +120,9 @@ static void test_create_proxy_again(void **state) {
     assert_ptr_equal(p->ssl, ssl);
     assert_int_equal(p->server_addrlen, sizeof(struct sockaddr));
     assert_int_equal(p->state, PS_SERVER_CONNECTING);
+    
+    will_return(__wrap_ngx_rbtree_delete, NULL);
+    will_return(__wrap_SSL_free, NULL);
     proxy_close(p, -1);
 }
 
@@ -129,7 +139,7 @@ static void test_create_proxy_connerr(void **state) {
     
     struct sockaddr sa;
     proxy_t *p = create_proxy(accept_sock, ssl, (struct sockaddr *)&sa,
-                              sizeof(struct sockaddr));
+                              sizeof(struct sockaddr), 5);
     assert_null(p);
 }
 
@@ -140,7 +150,7 @@ static void test_create_proxy_bad_malloc(void **state) {
     
     struct sockaddr sa;
     proxy_t *p = create_proxy(accept_sock, ssl, (struct sockaddr *)&sa,
-                              sizeof(struct sockaddr));
+                              sizeof(struct sockaddr), 5);
     assert_null(p);
 }
 
@@ -287,21 +297,22 @@ static void test_handle_proxy_cc(void **state) {
     // If connect returns EINPROGRESS let's call connect again later
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, EINPROGRESS);
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_AGAIN);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_AGAIN);
     assert_int_equal(p->state, PS_SERVER_CONNECTING);
 
     // If connect returns 0 and there were no epoll events
     p->state = PS_CLIENT_CONNECTED;
     will_return(__wrap_connect, 0);
+    will_return(__wrap_ngx_rbtree_delete, NULL);
     // Need EPOLLPRI here because we assert that we always have events
-    assert_int_equal(handle_proxy(p, -1, EPOLLPRI, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLPRI, NULL, 0, 5),TPX_SUCCESS);
     assert_int_equal(p->state, PS_READY);
 
     // If connect returns EINVAL
     p->state = PS_CLIENT_CONNECTED;
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, EINVAL);
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);
     // p is freed
 }
 
@@ -317,20 +328,20 @@ static void test_handle_proxy_sc(void **state) {
     // If connect returns EINPROGRESS let's call connect again later
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, EINPROGRESS);
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_AGAIN);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_AGAIN);
     assert_int_equal(p->state, PS_SERVER_CONNECTING);
 
     // If connect returns 0 and there were no epoll events
     p->state = PS_SERVER_CONNECTING;
     // Need EPOLLPRI here because we assert that we always have events
-    assert_int_equal(handle_proxy(p, -1, EPOLLPRI, NULL, 1),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLPRI, NULL, 1, 5),TPX_SUCCESS);
     assert_int_equal(p->state, PS_SERVER_CONNECTING);
 
     // If connect returns EINVAL
     p->state = PS_SERVER_CONNECTING;
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, EINVAL);
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);
     // p is freed
 }
 
@@ -347,7 +358,7 @@ static void test_handle_proxy_ready_s(void **state) {
     // empty outbuf
 
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0, 5),TPX_SUCCESS);
 
     // 1 chunk in outbuf
     p->state = PS_READY;
@@ -357,7 +368,7 @@ static void test_handle_proxy_ready_s(void **state) {
     assert_int_equal(enqueue(p->c2s, buf, buflen+1),TPX_SUCCESS);
     p->c2s->write_idx = buflen;
     will_return(__wrap_send, buflen);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0, 5),TPX_SUCCESS);
     queue_free(p->c2s);
     p->c2s = queue_new();
 
@@ -375,7 +386,7 @@ static void test_handle_proxy_ready_s(void **state) {
     will_return(__wrap_send, 0);
     will_return(__wrap_send, -1);
     will_return(__wrap_send, EAGAIN);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0, 5),TPX_SUCCESS);
     queue_free(p->c2s);
     p->c2s = queue_new();
 
@@ -389,7 +400,7 @@ static void test_handle_proxy_ready_s(void **state) {
     p->ssl = (SSL *)0x7;
     will_return(__wrap_queue_peek, TPX_FAILURE);
     will_return(__wrap_SSL_shutdown, 0);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0, 5),TPX_SUCCESS);
     queue_free(p->c2s);
     p->c2s = queue_new();
 
@@ -404,7 +415,7 @@ static void test_handle_proxy_ready_s(void **state) {
     will_return(__wrap_queue_peek, TPX_FAILURE);
     will_return(__wrap_SSL_shutdown, 1);
     will_return(__wrap_SSL_free, NULL);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0, 5),TPX_CLOSED);
     // Frees proxy
 }
 
@@ -419,7 +430,7 @@ static void test_handle_proxy_ready_c(void **state) {
 
     // EPOLLOUT
     // empty outbuf
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1, 5),TPX_SUCCESS);
 
     // 1 chunk in outbuf
     unsigned char *buf = malloc(10);
@@ -428,7 +439,7 @@ static void test_handle_proxy_ready_c(void **state) {
     assert_int_equal(enqueue(p->s2c, buf, buflen+1),TPX_SUCCESS);
     p->s2c->write_idx = buflen;
     will_return(__wrap_SSL_write, buflen);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1, 5),TPX_SUCCESS);
     queue_free(p->s2c);
     p->s2c = queue_new();
 
@@ -444,7 +455,7 @@ static void test_handle_proxy_ready_c(void **state) {
     will_return(__wrap_SSL_write, buflen);
     will_return(__wrap_SSL_get_error, SSL_ERROR_NONE);
     will_return(__wrap_SSL_write, buflen);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1, 5),TPX_SUCCESS);
     queue_free(p->s2c);
     p->s2c = queue_new();
 
@@ -455,7 +466,7 @@ static void test_handle_proxy_ready_c(void **state) {
     assert_int_equal(enqueue(p->s2c, buf, buflen+1),TPX_SUCCESS);
     p->s2c->write_idx = buflen;
     will_return(__wrap_queue_peek, TPX_FAILURE);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1, 5),TPX_CLOSED);
     // Frees proxy
 }
 
@@ -475,7 +486,7 @@ static void test_handle_proxy_sslerr(void **state) {
     p->s2c->write_idx = buflen;
     will_return(__wrap_SSL_write, -1);
     will_return(__wrap_SSL_get_error, SSL_ERROR_SYSCALL);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 1, 5),TPX_CLOSED);
 }
 
 static void test_handle_proxy_senderr(void **state) {
@@ -494,7 +505,7 @@ static void test_handle_proxy_senderr(void **state) {
     p->c2s->write_idx = buflen;
     will_return(__wrap_send, -1);
     will_return(__wrap_send, EINVAL);
-    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLOUT, NULL, 0, 5),TPX_CLOSED);
 }
 
 static void test_handle_proxy_read_ready_s(void **state) {
@@ -515,14 +526,14 @@ static void test_handle_proxy_read_ready_s(void **state) {
     will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_WRITE);
 
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_SUCCESS);
 
     // failed
     will_return(__wrap_read, -1);
     will_return(__wrap_read, EINVAL);
     
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);
 }
 
 static void test_handle_proxy_read_ready_c(void **state) {
@@ -542,14 +553,14 @@ static void test_handle_proxy_read_ready_c(void **state) {
     will_return(__wrap_send, 5);
 
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 1),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 1, 5),TPX_SUCCESS);
 
     // failed
     will_return(__wrap_SSL_read, -1);
     will_return(__wrap_SSL_get_error, SSL_ERROR_SYSCALL);
     
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 1),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 1, 5),TPX_CLOSED);
 }
 
 static void test_handle_proxy_disconnected(void **state) {
@@ -561,7 +572,7 @@ static void test_handle_proxy_disconnected(void **state) {
     p->serv_fd = -1;
     p->client_fd = -1;
 
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);
 }
 
 static void test_handle_proxy_bad_state(void **state) {
@@ -573,7 +584,7 @@ static void test_handle_proxy_bad_state(void **state) {
     p->serv_fd = -1;
     p->client_fd = -1;
 
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_FAILURE);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_FAILURE);
 }
 
 static void test_handle_proxy_read_bad_peek(void **state) {
@@ -593,11 +604,11 @@ static void test_handle_proxy_read_bad_peek(void **state) {
     will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_WRITE);
 
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_SUCCESS);
 
     will_return(__wrap_queue_peek_last, TPX_FAILURE);
 
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_CLOSED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);
 
     p = malloc(sizeof(proxy_t));
     p->state = PS_READY;
@@ -614,12 +625,12 @@ static void test_handle_proxy_read_bad_peek(void **state) {
     will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_WRITE);
 
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_SUCCESS);
 
     will_return(__wrap_queue_peek_last, TPX_EMPTY);
 
     p->state = PS_READY;
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0),TPX_CLOSED);    
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);    
 }
 
 static void test_empty_outbuf(void **state) {

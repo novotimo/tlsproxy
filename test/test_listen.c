@@ -77,20 +77,20 @@ void __wrap_err(int eval, const char *fmt, ...) {
 static void test_handle_accept1(void **state) {
     // This will test all of the failure guards in sequence
     will_return(__wrap_accept, -1);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 }
 
 static void test_handle_accept2(void **state) {
     will_return(__wrap_accept, 4);
     will_return(__wrap_fcntl, -1);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 }
 
 static void test_handle_accept3(void **state) {
     will_return(__wrap_accept, 4);
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_fcntl, -1);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 }
 
 static void test_handle_accept4(void **state) {
@@ -98,7 +98,7 @@ static void test_handle_accept4(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_SSL_new, NULL);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 
 }
 
@@ -109,7 +109,7 @@ static void test_handle_accept5(void **state) {
     will_return(__wrap_SSL_new, (SSL *)0x1);
     will_return(__wrap_SSL_set_fd, 0);
     will_return(__wrap_SSL_free, NULL);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 }
 
 static void test_handle_accept6(void **state) {
@@ -122,7 +122,7 @@ static void test_handle_accept6(void **state) {
     will_return(__wrap_SSL_set_accept_state, NULL);
     will_return(__wrap_create_proxy, NULL);
     will_return(__wrap_SSL_free, NULL);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 }
 
 static void test_handle_accept7(void **state) {
@@ -136,7 +136,7 @@ static void test_handle_accept7(void **state) {
     will_return(__wrap_create_proxy, (proxy_t *)0x1);
     will_return(__wrap_proxy_add_to_epoll, TPX_FAILURE);
     will_return(__wrap_proxy_close, NULL);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_FAILURE);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_FAILURE);
 }
 
 static void test_handle_accept_success(void **state) {
@@ -148,7 +148,7 @@ static void test_handle_accept_success(void **state) {
     will_return(__wrap_SSL_set_accept_state, NULL);
     will_return(__wrap_create_proxy, (proxy_t *)0x1);
     will_return(__wrap_proxy_add_to_epoll, TPX_SUCCESS);
-    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL), TPX_SUCCESS);
+    assert_int_equal(handle_accept(&goodevent, -1, 0, NULL, 5), TPX_SUCCESS);
 }
 
 static void test_get_conn(void **state) {

@@ -71,26 +71,28 @@ event_t *tag(event_t *ev, uint8_t t) {
 /* Make sure we properly test for the configuration rules */
 static void test_dispatch_events(void **state) {
     // Test with normal events
-    assert_int_equal(dispatch_events((event_t *)&goodevent1, 0, 0, NULL),
+    assert_int_equal(dispatch_events((event_t *)&goodevent1, 0, 0, NULL, 5),
                      TPX_SUCCESS);
-    assert_int_equal(dispatch_events((event_t *)&goodevent2, 0, 0, NULL),
+    assert_int_equal(dispatch_events((event_t *)&goodevent2, 0, 0, NULL, 5),
                      TPX_SUCCESS);
 
     // Test with tagged events
-    assert_int_equal(dispatch_events(tag((event_t *)&goodevent1,2), 0, 0, NULL),
-                     TPX_SUCCESS);
-    assert_int_equal(dispatch_events(tag((event_t *)&goodevent2,2), 0, 0, NULL),
-                     TPX_SUCCESS);
+    assert_int_equal(dispatch_events(tag((event_t *)&goodevent1,2), 0, 0, NULL,
+                                     5), TPX_SUCCESS);
+    assert_int_equal(dispatch_events(tag((event_t *)&goodevent2,2), 0, 0, NULL,
+                                     5), TPX_SUCCESS);
 
     // Bad events with wrong ID
-    expect_assert_failure(dispatch_events((event_t *)&badevent1, 0, 0, NULL));
-    expect_assert_failure(dispatch_events((event_t *)&badevent2, 0, 0, NULL));
+    expect_assert_failure(dispatch_events((event_t *)&badevent1, 0, 0, NULL,
+                                          5));
+    expect_assert_failure(dispatch_events((event_t *)&badevent2, 0, 0, NULL,
+                                          5));
 
     // Bad events with tags
     expect_assert_failure(dispatch_events(tag((event_t *)&badevent1,2), 0, 0,
-                                          NULL));
+                                          NULL, 5));
     expect_assert_failure(dispatch_events(tag((event_t *)&badevent2,2), 0, 0,
-                                          NULL));
+                                          NULL, 5));
 }
 
 int main(void) {
