@@ -11,6 +11,11 @@ if (UNIT_TESTING)
   add_compile_options(-O0)
 endif()
 
+if (ASAN)
+  add_compile_options(-fsanitize=address -g)
+  add_link_options(-fsanitize=address -static-libasan)
+endif()
+
 
 find_package(OpenSSL REQUIRED)
 
