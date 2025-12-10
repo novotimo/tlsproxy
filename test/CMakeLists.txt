@@ -1,6 +1,7 @@
 set(PROJ_SRC "${TLSProxy_SOURCE_DIR}/src")
 list(APPEND TEST_INC "${CMOCKA_INCLUDE_DIR}")
 list(APPEND TEST_INC "${TLSProxy_SOURCE_DIR}/inc")
+list(APPEND TEST_INC "${TLSProxy_SOURCE_DIR}/external")
 
 list(APPEND TEST_LIBS OpenSSL::Crypto)
 list(APPEND TEST_LIBS OpenSSL::SSL)
