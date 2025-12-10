@@ -5,6 +5,7 @@
 
 /** @brief The configuration of the TLS Proxy */
 typedef struct tpx_config {
+    unsigned int nworkers; /**< @brief The number of worker processes. */
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
     unsigned int connect_timeout; /**< @brief The timeout for connecting to
@@ -33,6 +34,8 @@ static const cyaml_schema_value_t cacert_entry = {
 };
 
 static const cyaml_schema_field_t top_mapping_schema[] = {
+    CYAML_FIELD_UINT(
+        "nworkers", CYAML_FLAG_DEFAULT, tpx_config_t, nworkers),
     CYAML_FIELD_STRING_PTR(
         "target-ip", CYAML_FLAG_POINTER, tpx_config_t, target_ip,
         0, CYAML_UNLIMITED),

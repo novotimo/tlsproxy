@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/epoll.h>
+#include <unistd.h>
 
 #include "config.h"
 #include "errors.h"
@@ -29,6 +30,8 @@
 
 void usage(const char *prog);
 void main_loop(int epollfd, SSL_CTX *ssl_ctx, unsigned int conn_timeout);
+void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx);
+void parent_loop(tpx_config_t *tpx_config, pid_t *pids);
 tpx_config_t *load_config(const char *conf_file);
 void start_listeners(tpx_config_t *config, int epollfd);
 static inline uint64_t del_tag(void *ptr);
@@ -69,8 +72,30 @@ int main(int argc, char *argv[]) {
     /* I hate SIGPIPE! */
     signal(SIGPIPE, SIG_IGN);
 
+    // Try with this outside for now
     SSL_CTX *ssl_ctx = init_openssl(tpx_config);
 
+    pid_t *pids = calloc(tpx_config->nworkers, sizeof(pid_t));
+    for (int i=0; i<tpx_config->nworkers; ++i) {
+        pid_t pid = fork();
+        switch (pid) {
+        case -1:
+            perror("fork");
+            exit(EXIT_FAILURE);
+        case 0:
+            pids[i] = pid;
+            child_loop(tpx_config, ssl_ctx);
+            exit(EXIT_SUCCESS);
+        default:
+            printf("Child is PID %jd\n", (intmax_t) pid);
+        }
+    }
+    parent_loop(tpx_config, pids);
+
+    return(EXIT_SUCCESS);
+}
+
+void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx) {
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
         err(EXIT_FAILURE, "epoll_create1");
@@ -78,8 +103,22 @@ int main(int argc, char *argv[]) {
     start_listeners(tpx_config, epollfd);
 
     main_loop(epollfd, ssl_ctx, tpx_config->connect_timeout);
+}
 
-    return(EXIT_SUCCESS);
+void parent_loop(tpx_config_t *config, pid_t *pids) {
+    int sig;
+    sigset_t ss;
+    sigfillset(&ss);
+    for (;;) {
+        sigwait(&ss, &sig);
+        psignal(sig, "Got signal");
+        if (sig == SIGTERM || sig == SIGKILL || sig == SIGINT) {
+            for (int i=0; i<config->nworkers; ++i)
+                kill(pids[i], SIGINT);
+            free(pids);
+            return;
+        }
+    }
 }
 
 /** @brief The main loop waits on epoll and dispatches events */

@@ -1,6 +1,10 @@
+## The number of worker processes, should be the same as your number
+## of cores.
+nworkers: 16
+
 ## Connection details of the backend server
-#target-ip: 127.0.0.1
-target-ip: 10.255.255.1
+target-ip: 127.0.0.1
+#target-ip: 10.255.255.1
 target-port: 8080
 
 ## If we can't connect to the server by this time, drop the connection
@@ -17,7 +21,7 @@ cacerts:
 - intcert.pem
 servcert: servcert.pem
 servkey: servkey.pem
-servkeypass: test
+#servkeypass: test
 
 ## Alternatively, provide all certs (including server cert) in a single file:
 # cert-chain: chain.pem
