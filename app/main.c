@@ -83,10 +83,11 @@ int main(int argc, char *argv[]) {
             perror("fork");
             exit(EXIT_FAILURE);
         case 0:
-            pids[i] = pid;
+            free(pids);
             child_loop(tpx_config, ssl_ctx);
             exit(EXIT_SUCCESS);
         default:
+            pids[i] = pid;
             printf("Child is PID %jd\n", (intmax_t) pid);
         }
     }
@@ -106,6 +107,8 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx) {
 }
 
 void parent_loop(tpx_config_t *config, pid_t *pids) {
+    // This whole section just doesn't work, whoops
+    // I'll fix it later
     int sig;
     sigset_t ss;
     sigfillset(&ss);

@@ -53,8 +53,8 @@ Please see the default configuration file in `example/default.yml`.
 - [x] Add TLS functionality to that connection context: add an OpenSSL context and make the handlers work differently depending on if the connection is TLS or not.
 - [x] Optimize connection ctx for memory usage.
 - [x] Add a small proxy context that can be used to track the state of both sockets, and close one if the other socket closes.
-- [ ] Work out if I need timeouts, and what for. If so, implement them.
-- [ ] Separate functionality into master and worker processes.
+- [x] Work out if I need timeouts, and what for. If so, implement them.
+- [x] Separate functionality into master and worker processes.
 - [ ] Implement shared memory for TLS connection caches and config updates.
 - [ ] Implement signal handlers for online config update, graceful shutdown, etc.
 - [ ] Implement privilege dropping, privsep, and chroot.
