@@ -33,6 +33,7 @@ target_sources(proxy
   src/config.c
   src/event.c
   src/listen.c
+  src/logging.c
   src/proxy.c
   src/queue.c
   src/timeutils.c

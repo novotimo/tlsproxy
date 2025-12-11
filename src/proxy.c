@@ -14,12 +14,15 @@
 
 #include "errors.h"
 #include "event.h"
+#include "logging.h"
+#include "logmacros.h"
 #include "queue.h"
 #include "timeutils.h"
 
 
 ngx_rbtree_t timeouts;
 static ngx_rbtree_node_t sentinel;
+shared_t *g_shmem;
 
 
 int create_connect(proxy_t *proxy);
@@ -60,7 +63,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
         // fd hasn't been added to epoll yet, and SSL will be freed outside
         free(proxy);
         
-        fprintf(stderr, "create_proxy: connecting socket");
+        LOG_MSG(LL_WARN, "create_proxy: couldn't create connect socket");
         proxy = NULL;
     }
 
@@ -235,7 +238,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
     }
 
     // This should actually be an assert
-    fprintf(stderr, "Corrupted event: proxy has wrong state %d\n", proxy->state);
+    LOG_MSG(LL_ERROR, "Corrupted event: proxy has wrong state %d\n",
+            proxy->state);
     return TPX_FAILURE;
 }
 
@@ -270,13 +274,13 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         // Use existing chunk
         switch (queue_peek_last(in_bufq, &rdbuf, &buflen)) {
         case TPX_FAILURE:
-            fprintf(stderr, "proxy_handle_read: The queue @ 0x%p is corrupted\n",
-                    in_bufq);
+            LOG_MSG(LL_ERROR, "proxy_handle_read: The queue @ 0x%p is "
+                    "corrupted\n", in_bufq);
             return TPX_FAILURE;
         case TPX_EMPTY:
-            fprintf(stderr, "proxy_handle_read: The queue @ 0x%p is corrupted: "
-                    "in_bufq->write_idx isn't -1 with an empty queue\n",
-                    in_bufq);
+            LOG_MSG(LL_ERROR, "proxy_handle_read: The queue @ 0x%p is "
+                    "corrupted: in_bufq->write_idx isn't -1 with an empty "
+                    "queue\n", in_bufq);
             return TPX_FAILURE;
         case TPX_SUCCESS:
         default:
@@ -305,10 +309,10 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
 
     if (is_client && SSL_get_error(proxy->ssl, nbytes) != SSL_ERROR_WANT_READ) {
-        ERR_print_errors_fp(stderr);
+        LOG_OSSL(LL_INFO, "proxy_handle_read");
         return TPX_CLOSED;
     } else if (!is_client && nbytes == -1 && errno != EAGAIN) {
-        perror("proxy_handle_read");
+        LOG_PERROR(LL_INFO, "proxy_handle_read");
         return TPX_CLOSED;
     }
 
@@ -365,8 +369,8 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     
         switch (queue_peek(out_bufq, &wbuf, &wbuflen)) {
         case TPX_FAILURE:
-            fprintf(stderr, "proxy_handle_write: The queue @ 0x%p is corrupted\n",
-                    out_bufq);
+            LOG_MSG(LL_ERROR, "proxy_handle_write: The queue @ 0x%p is "
+                   "corrupted\n", out_bufq);
             return TPX_FAILURE;
         case TPX_SUCCESS:
         default:
@@ -402,11 +406,11 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
                     continue;
                 if (sslerr == SSL_ERROR_WANT_WRITE)
                     return TPX_SUCCESS;
-                ERR_print_errors_fp(stderr);
+                LOG_OSSL(LL_INFO, "proxy_handle_write");
                 return TPX_CLOSED;
             } else if (nsent == -1) {
                 if (errno != EAGAIN) {
-                    perror("proxy_handle_write");
+                    LOG_PERROR(LL_INFO, "proxy_handle_write");
                     return TPX_CLOSED;
                 }
                 return TPX_SUCCESS;

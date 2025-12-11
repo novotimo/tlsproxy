@@ -6,11 +6,13 @@
 #include <setjmp.h>
 #include <cmocka.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 
 #include "macros.h"
 #include "event.h"
+#include "shmem.h"
 
 
 // Declare wrapped functions that follow the simplest pattern
@@ -607,7 +609,8 @@ static void test_handle_proxy_read_bad_peek(void **state) {
     assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_SUCCESS);
 
     will_return(__wrap_queue_peek_last, TPX_FAILURE);
-
+    
+    will_return(__wrap_ngx_rbtree_delete, NULL);
     assert_int_equal(handle_proxy(p, -1, EPOLLIN, NULL, 0, 5),TPX_CLOSED);
 
     p = malloc(sizeof(proxy_t));
@@ -651,6 +654,10 @@ static void test_empty_outbuf(void **state) {
 
 
 int main(void) {
+    g_shmem = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    g_shmem->logger.enabled = 0;
+    
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(test_create_proxy),
         cmocka_unit_test(test_create_proxy_again),

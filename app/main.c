@@ -1,19 +1,26 @@
 #include <assert.h>
 #include <err.h>
+#include <fcntl.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/signalfd.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 #include "config.h"
 #include "errors.h"
 #include "event.h"
 #include "listen.h"
+#include "logging.h"
 #include "ngx_rbtree.h"
 #include "proxy.h"
+#include "shmem.h"
 #include "timeutils.h"
 
 
@@ -23,18 +30,22 @@
 
 #define NAME closed /**< @brief The name of the hash set */
 #define KEY_TY uint64_t /**< @brief The key type of the hash set */
-#define HASH_FN vt_hash_integer /**< @brief The hash function of */
+#define HASH_FN vt_hash_integer /**< @brief The hash function */
 #define CMPR_FN vt_cmpr_integer /**< @brief The compare function */
 #include "verstable.h"
 
 
 void usage(const char *prog);
-void main_loop(int epollfd, SSL_CTX *ssl_ctx, unsigned int conn_timeout);
-void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx);
-void parent_loop(tpx_config_t *tpx_config, pid_t *pids);
+void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd);
+void parent_loop(tpx_config_t *tpx_config, pid_t *pids,
+                 int logfd, int sigfd, int efd);
 tpx_config_t *load_config(const char *conf_file);
 void start_listeners(tpx_config_t *config, int epollfd);
 static inline uint64_t del_tag(void *ptr);
+
+void block_signals(sigset_t *mask);
+void init_shmem(tpx_config_t *config);
+int init_logger(tpx_config_t *config);
 
 SSL_CTX *init_openssl(tpx_config_t *config);
 void load_servcert(tpx_config_t *config, SSL_CTX *ctx);
@@ -60,6 +71,39 @@ void usage(const char *pname) {
     exit(EXIT_FAILURE);
 }
 
+void init_shmem(tpx_config_t *config) {
+    g_shmem = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (g_shmem == MAP_FAILED)
+        err(EXIT_FAILURE, "mmap shared memory");
+}
+
+int init_logger(tpx_config_t *config) {
+    if (!config->logfile) {
+        printf("Disabling logging\n");
+        return -1;
+    }
+    int logfd = open(config->logfile,
+                     O_APPEND | O_CREAT | O_WRONLY,
+                     S_IRUSR | S_IWUSR);
+    if (logfd == -1)
+        err(EXIT_FAILURE, "open log file '%s'", config->logfile);
+    g_shmem->logger.enabled = 1;
+    g_shmem->logger.loglevel = LL_DEBUG;
+    return logfd;
+}
+
+void block_signals(sigset_t *mask) {
+    sigemptyset(mask);
+    sigaddset(mask, SIGTERM);
+    sigaddset(mask, SIGINT);
+    sigaddset(mask, SIGHUP);
+    sigaddset(mask, SIGQUIT);
+    sigaddset(mask, SIGPIPE);
+    if (sigprocmask(SIG_BLOCK, mask, NULL) == -1)
+        err(EXIT_FAILURE, "sigprocmask blocking signals");
+}
+
 /** @brief Inits OpenSSL and epoll then passes to main loop */
 int main(int argc, char *argv[]) {
     printf("TLS Proxy starting\n");
@@ -69,13 +113,27 @@ int main(int argc, char *argv[]) {
 
     tpx_config_t *tpx_config = load_config(argv[TPX_ARG_CONFFILE]);
 
+    // This can possibly overwrite environ a bit, we don't use it anyway
+    for (int i=0; i<argc; ++i)
+        memset(argv[i], 0, strlen(argv[i]));
+    sprintf(argv[0], "tlsproxy: master");
+    
     /* I hate SIGPIPE! */
-    signal(SIGPIPE, SIG_IGN);
+    sigset_t mask;
+    block_signals(&mask);
+    // This has to be done here so we don't need to pass the mask to parent_loop
+    int sfd = signalfd(-1, &mask, SFD_CLOEXEC);
+    // This has to be done here so workers can access it too
+    int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 
     // Try with this outside for now
     SSL_CTX *ssl_ctx = init_openssl(tpx_config);
 
     pid_t *pids = calloc(tpx_config->nworkers, sizeof(pid_t));
+    init_shmem(tpx_config);
+    int logfd = init_logger(tpx_config);
+    g_shmem->logger.eventfd = efd;
+    
     for (int i=0; i<tpx_config->nworkers; ++i) {
         pid_t pid = fork();
         switch (pid) {
@@ -84,48 +142,79 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         case 0:
             free(pids);
-            child_loop(tpx_config, ssl_ctx);
+            sprintf(argv[0], "tlsproxy: worker");
+            child_loop(tpx_config, ssl_ctx, efd);
             exit(EXIT_SUCCESS);
         default:
             pids[i] = pid;
             printf("Child is PID %jd\n", (intmax_t) pid);
         }
     }
-    parent_loop(tpx_config, pids);
+    parent_loop(tpx_config, pids, logfd, sfd, efd);
 
     return(EXIT_SUCCESS);
 }
 
-void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx) {
+void parent_loop(tpx_config_t *config,
+                 pid_t *pids,
+                 int logfd,
+                 int sigfd,
+                 int efd) {
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
-        err(EXIT_FAILURE, "epoll_create1");
+        err(EXIT_FAILURE, "epoll_create1 master");
+    struct epoll_event events[TPX_MAX_EVENTS];
 
-    start_listeners(tpx_config, epollfd);
+    struct epoll_event ev;
+    // Add eventfd
+    ev.events = EPOLLIN;
+    ev.data.fd = efd;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev) == -1)
+        err(EXIT_FAILURE, "epoll_ctl: eventfd");
+    // Add signalfd
+    ev.events = EPOLLIN;
+    ev.data.fd = sigfd;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &ev) == -1)
+        err(EXIT_FAILURE, "epoll_ctl: signalfd");
 
-    main_loop(epollfd, ssl_ctx, tpx_config->connect_timeout);
-}
-
-void parent_loop(tpx_config_t *config, pid_t *pids) {
-    // This whole section just doesn't work, whoops
-    // I'll fix it later
-    int sig;
-    sigset_t ss;
-    sigfillset(&ss);
     for (;;) {
-        sigwait(&ss, &sig);
-        psignal(sig, "Got signal");
-        if (sig == SIGTERM || sig == SIGKILL || sig == SIGINT) {
-            for (int i=0; i<config->nworkers; ++i)
-                kill(pids[i], SIGINT);
-            free(pids);
-            return;
+        int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
+        for (size_t n=0; n<nfds; ++n) {
+            if (events[n].data.fd == efd) {
+                uint64_t count = 0;
+                if (read(efd, &count, sizeof(count)) < 0) {
+                    perror("read eventfd");
+                    continue;
+                }
+                write_logs(logfd, &g_shmem->logger, count);
+            } else if (events[n].data.fd == sigfd) {
+                struct signalfd_siginfo si;
+                read(sigfd, &si, sizeof(si));
+                printf("Got a signal %d\n", si.ssi_signo);
+                for (int i=0; i<config->nworkers; ++i)
+                    kill(pids[i], si.ssi_signo);
+                exit(EXIT_SUCCESS);
+            }
         }
     }
 }
 
-/** @brief The main loop waits on epoll and dispatches events */
-void main_loop(int epollfd, SSL_CTX *ssl_ctx, unsigned int conn_timeout) {
+void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd) {
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGHUP);
+    sigaddset(&mask, SIGQUIT);
+    if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
+        err(EXIT_FAILURE, "sigprocmask unblocking signals");
+    
+    int epollfd = epoll_create1(0);
+    if (epollfd == -1)
+        err(EXIT_FAILURE, "epoll_create1 worker");
+
+    start_listeners(tpx_config, epollfd);
+
     struct epoll_event events[TPX_MAX_EVENTS];
     closed closed_set;
     closed_init(&closed_set);
@@ -165,11 +254,11 @@ void main_loop(int epollfd, SSL_CTX *ssl_ctx, unsigned int conn_timeout) {
             
             tpx_err_t ev_ret = dispatch_events(events[n].data.ptr, epollfd,
                                                events[n].events, ssl_ctx,
-                                               conn_timeout);
+                                               tpx_config->connect_timeout);
             if (ev_ret == TPX_CLOSED) {
                 it = closed_insert(&closed_set, del_tag(events[n].data.ptr));
                 if (closed_is_end(it)) {
-                    errx(EXIT_FAILURE, "main_loop: Ran out of memory for "
+                    errx(EXIT_FAILURE, "child_loop: Ran out of memory for "
                          "hash table");
                 }
             }

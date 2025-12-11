@@ -1,6 +1,7 @@
 ## The number of worker processes, should be the same as your number
 ## of cores.
-nworkers: 16
+nworkers: 1
+logfile: tlsproxy.log
 
 ## Connection details of the backend server
 target-ip: 127.0.0.1
