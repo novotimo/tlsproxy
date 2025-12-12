@@ -147,7 +147,6 @@ int main(int argc, char *argv[]) {
             exit(EXIT_SUCCESS);
         default:
             pids[i] = pid;
-            printf("Child is PID %jd\n", (intmax_t) pid);
         }
     }
     parent_loop(tpx_config, pids, logfd, sfd, efd);
@@ -190,7 +189,6 @@ void parent_loop(tpx_config_t *config,
             } else if (events[n].data.fd == sigfd) {
                 struct signalfd_siginfo si;
                 read(sigfd, &si, sizeof(si));
-                printf("Got a signal %d\n", si.ssi_signo);
                 for (int i=0; i<config->nworkers; ++i)
                     kill(pids[i], si.ssi_signo);
                 exit(EXIT_SUCCESS);

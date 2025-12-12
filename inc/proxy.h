@@ -180,4 +180,6 @@ void proxy_init_timeouts();
 /** @brief Handle the proxy getting a timeout. */
 tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd);
 
+tpx_err_t proxy_handle_ssl_failure(SSL *ssl, int retcode);
+
 #endif

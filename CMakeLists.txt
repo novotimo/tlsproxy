@@ -55,8 +55,7 @@ if (UNIT_TESTING)
   include(AddCMockaTest)
   add_subdirectory(test)
   append_coverage_compiler_flags()
-else()
-  
+elseif (BUILD_DOC)
   # Doxygen
   find_package(Doxygen
     OPTIONAL dot

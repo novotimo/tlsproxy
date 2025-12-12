@@ -35,10 +35,10 @@ typedef struct logger_s {
                                       messages to write */
 } logger_t;
 
-
 void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
-void log_msg(logger_t *logger, const char *fmt, ...);
-void log_ossl(logger_t *logger, const char *desc);
+void log_msg(loglevel_t level, const char *fmt, ...);
+void log_ossl(loglevel_t level, const char *description);
+void log_err(loglevel_t level, const char *description);
 
 
 #endif
