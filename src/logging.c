@@ -15,9 +15,14 @@
 #include "shmem.h"
 
 
+#define LINEBUF_OFFSET sizeof(uint32_t)
+
+
 typedef struct linebuf_s {
-    uint32_t len;
-    char buf[TPX_LOG_LINE_MAX+1];
+    union {
+        uint32_t len;
+        char buf[TPX_LOG_LINE_MAX+1];
+    } u;
 } linebuf_t;
 
 shared_t *g_shmem;
@@ -57,30 +62,50 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         
         // This length includes the current byte.
         size_t len_to_end = TPX_LOGBUF_SIZE - logger->read_idx;
-        size_t len_to_check = wrapped ? len_to_end : w_idx;
-        size_t linelen = strnlen(&logger->log_buf[logger->read_idx],
-                                 len_to_check);
-        ssize_t retcode = write(logfd, &logger->log_buf[logger->read_idx],
-                                linelen);
-        if (retcode == -1) {
+        uint32_t linelen = 0;
+        if (len_to_end >= LINEBUF_OFFSET) {
+            linelen = *(uint32_t *)&logger->log_buf[logger->read_idx];
+            logger->read_idx+=LINEBUF_OFFSET;
+        } else {
+            union {
+                unsigned char b[LINEBUF_OFFSET];
+                uint32_t i;
+            } u;
+            for (int i=0; i<LINEBUF_OFFSET; ++i) {
+                u.b[i] = logger->log_buf[logger->read_idx];
+                INC_WRAP(logger->read_idx);
+            }
+            linelen = u.i;
+        }
+        assert(linelen > LINEBUF_OFFSET && linelen < TPX_LOG_LINE_MAX);
+        linelen -= LINEBUF_OFFSET;
+        len_to_end -= LINEBUF_OFFSET;
+        
+        ssize_t nwritten = write(logfd, &logger->log_buf[logger->read_idx],
+                                MIN(len_to_end,linelen));
+        if (nwritten == -1) {
             // We don't want to crash here
             perror("Writing log failed");
             return;
         }
 
-        logger->read_idx += linelen;
+        logger->read_idx += nwritten;
         if (logger->read_idx >= TPX_LOGBUF_SIZE)
             logger->read_idx = 0;
 
         // If we need to wrap around
-        if (wrapped && linelen == len_to_end) {
-            linelen = strnlen(&logger->log_buf[0], w_idx);
-            retcode = write(logfd, &logger->log_buf[logger->read_idx], linelen);
-            if (retcode == -1) {
+        if (wrapped && nwritten == len_to_end && linelen > len_to_end) {
+            size_t remaining = linelen - len_to_end;
+            
+            assert(logger->read_idx == 0);
+            
+            nwritten = write(logfd, &logger->log_buf[logger->read_idx],
+                remaining);
+            if (nwritten == -1) {
                 perror("Writing log failed");
                 return;
             }
-            logger->read_idx = linelen;
+            logger->read_idx = remaining;
         }
         
         // Skip the null byte
@@ -99,14 +124,14 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 
 int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                     int sanitize) {
-    assert(linebuf->len < TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len < TPX_LOG_LINE_MAX);
 
     if (sanitize) {
-        char *sanitized = linebuf->buf;
+        char *sanitized = linebuf->u.buf;
         // endptrs point to the null terminator
         const char *str_endptr = str+len;
         const char *san_endptr = &sanitized[TPX_LOG_LINE_MAX];
-        char *sanptr = sanitized + linebuf->len;
+        char *sanptr = sanitized + linebuf->u.len;
 
         uint8_t filled = 0;
         for (const char *cursor = str; cursor < str_endptr; ++cursor) {
@@ -116,14 +141,14 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
             }
         }
 
-        linebuf->len = sanptr - sanitized;
+        linebuf->u.len = sanptr - sanitized;
         if (filled) return -1;
     } else {
-        memcpy(linebuf->buf, str, len);
-        linebuf->len += len;
+        memcpy(linebuf->u.buf + linebuf->u.len, str, len);
+        linebuf->u.len += len;
     }
 
-    assert(linebuf->len < TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len < TPX_LOG_LINE_MAX);
     return 0;
 }
 
@@ -167,7 +192,7 @@ void m_log_msg(int logfd, loglevel_t level, const char *fmt, ...) {
         return;
 
     static linebuf_t linebuf;
-    linebuf.len = 0;
+    linebuf.u.len = LINEBUF_OFFSET;
     if (_linebuf_add_metadata(&linebuf, 1, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line!\n");
         return;
@@ -175,15 +200,16 @@ void m_log_msg(int logfd, loglevel_t level, const char *fmt, ...) {
 
     va_list va;
     va_start(va, fmt);
-    linebuf.len += vsnprintf(&linebuf.buf[linebuf.len],
-                             TPX_LOG_LINE_MAX+1 - linebuf.len, fmt, va);
+    linebuf.u.len += vsnprintf(&linebuf.u.buf[linebuf.u.len],
+                             TPX_LOG_LINE_MAX+1 - linebuf.u.len, fmt, va);
     va_end(va);
-    if (linebuf.len > TPX_LOG_LINE_MAX)
-        linebuf.len = TPX_LOG_LINE_MAX;
+    if (linebuf.u.len > TPX_LOG_LINE_MAX)
+        linebuf.u.len = TPX_LOG_LINE_MAX;
 
-    linebuf.buf[linebuf.len++] = '\n';
+    linebuf.u.buf[linebuf.u.len++] = '\n';
 
-    ssize_t retcode = write(logfd, linebuf.buf, linebuf.len);
+    ssize_t retcode = write(logfd, &linebuf.u.buf[LINEBUF_OFFSET],
+                            linebuf.u.len - LINEBUF_OFFSET);
     if (retcode == -1) {
         // We don't want to crash here
         perror("Writing log failed");
@@ -201,24 +227,25 @@ void m_log_ossl(int logfd, loglevel_t level, const char *description) {
         return;
 
     static linebuf_t linebuf;
-    linebuf.len = 0;
+    linebuf.u.len = LINEBUF_OFFSET;
     if (_linebuf_add_metadata(&linebuf, 1, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line\n");
         return;
     }
-    linebuf.len += snprintf(&linebuf.buf[linebuf.len],
-                            TPX_LOG_LINE_MAX+1 - linebuf.len,
+    linebuf.u.len += snprintf(&linebuf.u.buf[linebuf.u.len],
+                            TPX_LOG_LINE_MAX+1 - linebuf.u.len,
                             "%s: OpenSSL error queue: ", description);
 
     // Ignore truncation
-    if (linebuf.len > TPX_LOG_LINE_MAX)
-        linebuf.len = TPX_LOG_LINE_MAX;
+    if (linebuf.u.len > TPX_LOG_LINE_MAX)
+        linebuf.u.len = TPX_LOG_LINE_MAX;
     
     ERR_print_errors_cb(_linebuf_append_cb, &linebuf);
     // This could overwrite the null terminator, keep that in mind
-    linebuf.buf[linebuf.len++] = '\n';
+    linebuf.u.buf[linebuf.u.len++] = '\n';
  
-    ssize_t retcode = write(logfd, linebuf.buf, linebuf.len);
+    ssize_t retcode = write(logfd, &linebuf.u.buf[LINEBUF_OFFSET],
+                            linebuf.u.len - LINEBUF_OFFSET);
     if (retcode == -1) {
         // We don't want to crash here
         perror("Writing log failed");
@@ -247,24 +274,24 @@ void m_log_errno(int logfd, loglevel_t level, const char *description) {
 
 // MUST be run inside critical section of logger->write_lock
 void _ringbuf_writeln(logger_t *logger, linebuf_t *line) {
-    if (!_ringbuf_fits(logger, line->len)) {
+    if (!_ringbuf_fits(logger, line->u.len)) {
         fprintf(stderr, "Ring buffer full, dropping new logs...\n");
         return;
     }
     
     uint32_t w_idx = logger->write_idx;
     
-    if (w_idx + line->len > TPX_LOGBUF_SIZE) {
+    if (w_idx + line->u.len > TPX_LOGBUF_SIZE) {
         // Wrap the message around the ring buffer
         memcpy(&logger->log_buf[w_idx],
-               line->buf, TPX_LOGBUF_SIZE - w_idx);
+               line->u.buf, TPX_LOGBUF_SIZE - w_idx);
         memcpy(&logger->log_buf[0],
-               &line->buf[TPX_LOGBUF_SIZE - w_idx],
-               line->len - (TPX_LOGBUF_SIZE - w_idx));
-        w_idx = line->len - (TPX_LOGBUF_SIZE-w_idx);
+               &line->u.buf[TPX_LOGBUF_SIZE - w_idx],
+               line->u.len - (TPX_LOGBUF_SIZE - w_idx));
+        w_idx = line->u.len - (TPX_LOGBUF_SIZE-w_idx);
     } else {
-        memcpy(&logger->log_buf[w_idx], line->buf, line->len);
-        w_idx += line->len;
+        memcpy(&logger->log_buf[w_idx], line->u.buf, line->u.len);
+        w_idx += line->u.len;
         if (w_idx == TPX_LOGBUF_SIZE)
             w_idx = 0;
     }
@@ -281,7 +308,7 @@ void log_msg(loglevel_t level, const char *fmt, ...) {
         return;
     
     static linebuf_t linebuf;
-    linebuf.len = 0;
+    linebuf.u.len = LINEBUF_OFFSET;
     
     if (_linebuf_add_metadata(&linebuf, 0, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line!\n");
@@ -290,14 +317,14 @@ void log_msg(loglevel_t level, const char *fmt, ...) {
 
     va_list va;
     va_start(va, fmt);
-    linebuf.len += vsnprintf(&linebuf.buf[linebuf.len],
-                             TPX_LOG_LINE_MAX+1 - linebuf.len, fmt, va);
+    linebuf.u.len += vsnprintf(&linebuf.u.buf[linebuf.u.len],
+                             TPX_LOG_LINE_MAX+1 - linebuf.u.len, fmt, va);
     va_end(va);
     // If the log got truncated by vsnprintf, just write the truncated stuff
-    if (linebuf.len > TPX_LOG_LINE_MAX)
-        linebuf.len = TPX_LOG_LINE_MAX;
+    if (linebuf.u.len > TPX_LOG_LINE_MAX)
+        linebuf.u.len = TPX_LOG_LINE_MAX;
 
-    linebuf.buf[linebuf.len++] = '\n';
+    linebuf.u.buf[linebuf.u.len++] = '\n';
 
     if (pthread_mutex_lock(&logger->write_lock)) {
         perror("pthread_mutex_lock when logging");
@@ -319,23 +346,23 @@ void log_ossl(loglevel_t level, const char *description) {
         return;
 
     static linebuf_t linebuf;
-    linebuf.len = 0;
+    linebuf.u.len = LINEBUF_OFFSET;
     if (_linebuf_add_metadata(&linebuf, 0, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line!\n");
         return;
     }
     
-    linebuf.len += snprintf(&linebuf.buf[linebuf.len],
-                            TPX_LOG_LINE_MAX+1 - linebuf.len,
+    linebuf.u.len += snprintf(&linebuf.u.buf[linebuf.u.len],
+                            TPX_LOG_LINE_MAX+1 - linebuf.u.len,
                             "%s: OpenSSL error queue: ", description);
 
     // Ignore truncation
-    if (linebuf.len > TPX_LOG_LINE_MAX)
-        linebuf.len = TPX_LOG_LINE_MAX;
+    if (linebuf.u.len > TPX_LOG_LINE_MAX)
+        linebuf.u.len = TPX_LOG_LINE_MAX;
     
     ERR_print_errors_cb(_linebuf_append_cb, &linebuf);
     // This could overwrite the null terminator, keep that in mind
-    linebuf.buf[linebuf.len++] = '\n';
+    linebuf.u.buf[linebuf.u.len++] = '\n';
  
     if (pthread_mutex_lock(&logger->write_lock)) {
         perror("pthread_mutex_lock when logging");
