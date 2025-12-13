@@ -3,14 +3,23 @@
 
 #include <cyaml/cyaml.h>
 
+#include "logging.h"
+
+
+#define TPX_ENUM_MISSING -1
+
+
 /** @brief The configuration of the TLS Proxy */
 typedef struct tpx_config {
     unsigned int nworkers; /**< @brief The number of worker processes. */
     const char *logfile; /**< @brief The file to write logs into. */
+    loglevel_t *loglevel; /**< @brief Don't print messages higher than this log
+                          * level. */
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
     unsigned int connect_timeout; /**< @brief The timeout for connecting to
                                    * the backend in milliseconds */
+
 
     const char *listen_ip; /**< @brief The local IP address to listen on. */
     unsigned int listen_port; /**< @brief The port to listen on. */
@@ -34,6 +43,14 @@ static const cyaml_schema_value_t cacert_entry = {
     CYAML_VALUE_STRING(CYAML_FLAG_POINTER, char, 0, CYAML_UNLIMITED),
 };
 
+static const cyaml_strval_t loglevel_strings[] = {
+    { "FATAL", LL_FATAL },
+    { "ERROR", LL_ERROR },
+    { "WARN",  LL_WARN  },
+    { "INFO",  LL_INFO  },
+    { "DEBUG", LL_DEBUG },
+};
+
 static const cyaml_schema_field_t top_mapping_schema[] = {
     CYAML_FIELD_UINT(
         "nworkers", CYAML_FLAG_DEFAULT, tpx_config_t, nworkers),
@@ -41,6 +58,22 @@ static const cyaml_schema_field_t top_mapping_schema[] = {
         "logfile", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
         logfile, 0, CYAML_UNLIMITED),
 
+    // This will be possible in the next release of libcyaml
+    /*
+    { .key = "loglevel",
+      .data_offset = offsetof(tpx_config_t, loglevel),
+      .value = {
+          CYAML_VALUE_ENUM(((CYAML_FLAG_DEFAULT || CYAML_FLAG_OPTIONAL)
+                            & (~CYAML_FLAG_POINTER)),
+                           (((tpx_config_t *)NULL)->loglevel),
+                           loglevel_strings, CYAML_ARRAY_LEN(loglevel_strings)),
+      },
+      .missing = TPX_ENUM_MISSING,
+    },
+    */
+    CYAML_FIELD_ENUM_PTR(
+        "loglevel", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
+        loglevel, loglevel_strings, CYAML_ARRAY_LEN(loglevel_strings)),
     
     CYAML_FIELD_STRING_PTR(
         "target-ip", CYAML_FLAG_POINTER, tpx_config_t, target_ip,

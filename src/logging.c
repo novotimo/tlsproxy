@@ -2,6 +2,7 @@
 
 
 #include <assert.h>
+#include <ctype.h>
 #include <err.h>
 #include <openssl/err.h>
 #include <stdarg.h>

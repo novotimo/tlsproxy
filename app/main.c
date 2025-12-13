@@ -89,7 +89,10 @@ int init_logger(tpx_config_t *config) {
     if (logfd == -1)
         err(EXIT_FAILURE, "open log file '%s'", config->logfile);
     g_shmem->logger.enabled = 1;
-    g_shmem->logger.loglevel = LL_DEBUG;
+    if (config->loglevel)
+        g_shmem->logger.loglevel = *config->loglevel;
+    else
+        g_shmem->logger.loglevel = LL_INFO;
     
     pthread_mutexattr_t attrs;
     pthread_mutexattr_init(&attrs);
@@ -124,6 +127,7 @@ int main(int argc, char *argv[]) {
     // Init logging ASAP
     init_shmem(tpx_config);
     int logfd = init_logger(tpx_config);
+    m_log_msg(logfd, LL_INFO, "TLS Proxy v1.0.0 starting");
     
     // This can possibly overwrite environ a bit, but we don't use it anyway
     for (int i=0; i<argc; ++i)
