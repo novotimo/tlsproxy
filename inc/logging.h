@@ -55,6 +55,4 @@ int sanitize_c(const char c, char *outptr, const char *endptr);
 
 /* Internal functions */
 
-int _ringbuf_fits(logger_t *logger, uint32_t len);
-
 #endif

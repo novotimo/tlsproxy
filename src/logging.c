@@ -33,6 +33,7 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                    int sanitize);
 int _linebuf_append_cb(const char *str, size_t len, void *u);
 uint64_t _log_str(const char *str, size_t len, linebuf_t *linebuf);
+int _ringbuf_fits(logger_t *logger, uint32_t len);
 
 
 // This runs on the master process only
