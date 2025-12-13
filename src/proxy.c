@@ -307,9 +307,20 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         if (proxy_handle_ssl_failure(proxy->ssl, nbytes) == TPX_CLOSED) {
             return TPX_CLOSED;
         }
-    } else if (!is_client && nbytes == -1 && errno != EAGAIN) {
-        log_errno(LL_INFO, "Couldn't read bytes from server socket");
-        return TPX_CLOSED;
+    } else if (!is_client && nbytes == -1) {
+        switch (errno) {
+        case EAGAIN:
+            break;
+        case ECONNRESET:
+        case EPIPE:
+            log_errno(LL_DEBUG, "Couldn't read bytes from server socket");
+            return TPX_CLOSED;
+        default:
+            log_errno(LL_ERROR, "Couldn't read bytes from server socket");
+            return TPX_CLOSED;
+        }
+    } else if (!is_client && nbytes == 0) {
+        log_msg(LL_DEBUG, "Got EOF on server socket");
     }
 
     return proxy_process_data(proxy, is_client);
@@ -400,11 +411,18 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
             if (is_client && nsent <= 0) {
                 return proxy_handle_ssl_failure(proxy->ssl, nsent);
             } else if (!is_client && nsent == -1) {
-                if (errno != EAGAIN) {
-                    log_errno(LL_INFO, "Couldn't send bytes to server socket");
-                    return TPX_CLOSED;
+                switch (errno) {
+                case EAGAIN:
+                    return TPX_SUCCESS;
+                case ECONNRESET:
+                case EPIPE:
+                    log_errno(LL_DEBUG, "Couldn't send bytes to server socket");
+                    break;
+                default:
+                    log_errno(LL_ERROR, "Couldn't send bytes to server socket");
+                    break;
                 }
-                return TPX_SUCCESS;
+                return TPX_CLOSED;
             }
         }
 
@@ -432,7 +450,18 @@ tpx_err_t proxy_handle_ssl_failure(SSL *ssl, int retcode) {
     case SSL_ERROR_WANT_WRITE:
         return TPX_SUCCESS;
     case SSL_ERROR_SYSCALL:
-        log_errno(LL_ERROR, "Couldn't communicate with client socket");
+        switch (errno) {
+        case EAGAIN:
+            // This doesn't actually happen
+            return TPX_SUCCESS;
+        case ECONNRESET:
+        case EPIPE:
+            log_errno(LL_DEBUG, "Couldn't communicate with client socket");
+            break;
+        default:
+            log_errno(LL_ERROR, "Couldn't communicate with client socket");
+            break;
+        }
         return TPX_CLOSED;
     case SSL_ERROR_ZERO_RETURN:
         return TPX_CLOSED;
