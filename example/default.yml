@@ -3,7 +3,7 @@
 nworkers: 16
 logfile: tlsproxy.log
 ## Log levels are: FATAL ERROR WARN INFO DEBUG
-#loglevel: DEBUG
+loglevel: DEBUG
 
 ## Connection details of the backend server
 target-ip: 127.0.0.1

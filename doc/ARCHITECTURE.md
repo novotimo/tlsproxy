@@ -2,7 +2,9 @@
 
 ## Introduction
 
-This TLS proxy is a small project I'm doing to practice software design, with its architecture strongly influenced by nginx's really nice event-based architecture. It's pretty much just stunnel, but implemented on an epoll-based event loop.
+This TLS proxy is a small project I'm doing to practice software design, with its architecture strongly influenced by nginx's really nice event-based architecture. It's pretty much just stunnel, but implemented on an epoll-based event loop, so it's way over 10x faster while still being much simpler than nginx.
+
+The intended audience is devops and sysadmins who want to have a TLS terminator that's quite easy on resources, and will be a first class citizen in Docker when used to protect microservices, though it can handle massive concurrency, matching `nginx`'s performance at around 300 handshakes per second per worker process on my CPU (an AMD Ryzen 7 5800X) while using negligible RAM.
 
 ## Definitions
 
@@ -17,7 +19,7 @@ This TLS proxy is a small project I'm doing to practice software design, with it
 2. The backend server must see the connection as plaintext.
 3. The client must see the connection as TLS-tunneled.
 4. The program must be configurable with a configuration file.
-5. The program must be runnable as a daemon with privsep and chroot.
+5. The program must be runnable as a daemon with priv dropping and chroot.
 6. The program must run on modern Linux machines.
 
 ### Non-functional
@@ -58,7 +60,7 @@ This project's process and concurrency model is based heavily on nginx's, as is 
 
 ### Performance
 
-There are a few considerations for speed. One is that the session cache for resumption should by all means shared through all processes, but in the interest of time I may need to skip this. If I can work fast enough, this can be done, but otherwise I will have to do with either no session cacheing or per-process caches, which will both be slow, so I may as well disable cacheing if I'm not going to implement it in shared memory.
+There are a few considerations for speed. First, this software is optimized for memory footprint. It's predicted that the main performance bottleneck will be OpenSSL cryptography calculations, and there's not much we can do to change this. The main goal would be to reduce overhead so that we're as close to OpenSSL speed as possible. Where possible we do this, though we can't use a copy-free architecture since we can't exactly encrypt in-place.
 
 ### Configuration
 
@@ -66,26 +68,39 @@ This will just use a simple YAML configuration file for now. As of now not much 
 
 
 ```yaml
+## The number of worker processes, should be the same as your number
+## of cores.
+nworkers: 16
+logfile: tlsproxy.log
+## Log levels are: FATAL ERROR WARN INFO DEBUG
+loglevel: DEBUG
+
 ## Connection details of the backend server
-target-ip: localhost
-target-port: 80
+target-ip: 127.0.0.1
+#target-ip: 10.255.255.1
+target-port: 8080
+
+## If we can't connect to the server by this time, drop the connection
+connect-timeout: 5000
 
 ## The proxy will accept connections on <listen-ip>:<listen-port>
 ## 0.0.0.0 means listen on every interface
 listen-ip: 0.0.0.0
-listen-port: 443
+listen-port: 8443
 
 ## The certificate chain offered to clients
 cacerts:
-- root.pem
-- intermediate.pem
+- cacert.pem
+- intcert.pem
 servcert: servcert.pem
 servkey: servkey.pem
+#servkeypass: test
 
 ## Alternatively, provide all certs (including server cert) in a single file:
 # cert-chain: chain.pem
 # servkey: servkey.pem
-## cacerts and servcert are mutually exclusive with cert-chain.
+# servkeypass: test
+## cacerts and servcert can't be used together with cert-chain.
 
 ## If we implement mTLS:
 # trusted-certs:
@@ -98,31 +113,127 @@ servkey: servkey.pem
 
 ### Documentation
 
-I'll just use Doxygen, maybe make a CI step in GitHub to upload it to GitHub Pages.
+The documentation is done in Doxygen, and a CI step to build this and host it on GitHub Pages is planned.
 
 ### Testing
 
-I'll try to focus on unit testing with CMocka, though I will do performance benchmarking in other ways (TODO: research). https://github.com/tempesta-tech/tls-perf seems to be a good TLS benchmarking tool, though I may not be able to use it as it would probably shut down the connection before the server socket gets a chance to connect to the backend.
+Unit testing is done with CMocka, though the tests need updating as the software is in constant development.
 
 
 ## General Code model
 
 ### Main
 
-In the parent process, this will read the config files, initialize shared memory, and start the worker processes, then wait for signals. In the child processes, this will listen on the proxy socket with SO_REUSEPORT, drop privileges, post a socket read event, then go into the main event loop.
+In the parent process, this will read the config files, initialize shared memory, drop privileges, and start the worker processes, then wait for signals. In the worker processes, this listens on the proxy sockets with SO_REUSEPORT, and for each connection received creates a new proxy context, and every new event on the file descriptors will be handled by the proxy state machine, the state of which is the aforementioned proxy context.
+
+### Events
+
+Events are the data we store a pointer to in epoll. They're distinguished by their event ID, of which we have `EV_LISTEN` and `EV_PROXY`. The event dispatcher in `src/event.c` checks the event ID and dispatches to `handle_accept()` or `handle_proxy()` based on that.
 
 ### Proxy
 
-In general, the proxy is a state machine created when a connection is accepted on the listen socket. It will go something like this:
-- Client connected
-- Sockets connected
-- Client disconnected
-- Server disconnected
-- Proxy error
-- Done
+In general, the proxy is a state machine created when a connection is accepted on the listen socket. The states are:
+- `PS_CLIENT_CONNECTED`
+- `PS_SERVER_CONNECTING`
+- `PS_READY`
+- `PS_SERVER_DISCONNECTED`
+- `PS_CLIENT_DISCONNECTED`
 
-The proxy will be created once the client fully finishes its TLS handshake and is fully connected and authenticated. So, the first state is "Client connected". Once the server is connected, the "Sockets connected" state says that read and write operations can now be done. Next, when one side disconnects or the proxy errors, we make sure to shut down all sockets and then proceed to the "Done" state. Depending on when the proxy is deleted, the "Done" state may not be needed. Both the client and server sockets are stored in the proxy context.
+The proxy will be created once the client fully finishes its TLS handshake and is fully connected and authenticated. So, the first state is "Client connected". When this happens, we start trying to connect to the server and set the state to "Server connecting". Once it's connected, we move to "Ready".
 
-### Socket
+In the "Ready" state, we forward the data received on both sockets to the other, after encryption/decryption. When one side disconnects, we move to the respective state, as the situations are different: if the server disconnects, we still need to do a graceful TLS shutdown. If the client disconnects, we can just send a connection reset to the server.
 
-Both plain and TLS sockets will have their own wrappers, the TLS one bundling some OpenSSL context along with the TLS socket, and for both plain and TLS sockets, some read and write callbacks.
+The important decision regarding the proxy context (`proxy_t` in `inc/proxy.h`) was to use the same context for both sockets in the proxy pair. This begs the question, how do you tell events apart? When using `epoll_wait`, you get back an arbitrary 64-bit value, either an fd, or a pointer to something. We want the pointer to be towards the same data, but we want to tell the pointers apart without needing the other one and without wasting too much space. So, we've chosen to tag the pointers: malloc aligns to an 8-byte boundary, and so the last 3 bits of the pointer can be used for other things. We use the last bit of the pointer as a tag: `uint8_t tag = (uintptr_t)event & 0x1`. If this tag is 1, this is the client socket. If it's 0, this is the server socket. We strip the tag as soon as possible so that we don't dereference the proxy pointer misaligned by one byte.
+
+
+### Listener
+
+The listener context just contains the listen socket and the peer address, used for connecting new sockets to the remote host once we accept a new connection. Basically, when a listener accepts a connection, it starts a new pending connection to the peer address. This is stored here so that we can easily support listening on multiple sockets and forwarding to different backend servers. Used with `SO_REUSEPORT`, this could also achieve load balancing: create two listen sockets both on the same port, but pointing to different backends, and the kernel will load balance for us.
+
+
+## Log messages
+
+Logging will output in key-value format to a simple log file. The main aim for the logger is to allow easy integration with any log analysis or monitoring system, as I imagine this to be important for many users. The log messages can be treated as audit events, each having an event type. The schema is as so:
+
+### Base schema
+
+All other schemas will inherit from this. Each log event has:
+- `timestamp`: This is in RFC 3339 format.
+- `service`: "tlsproxy", used to identify this product.
+- `process_type`: "worker" or "master", depending on whether this is an event from the master process or a worker process.
+- `pid`: The process id.
+- `level`: The log level. This is one of FATAL, ERROR, WARN, INFO, or DEBUG, where FATAL is the lowest and DEBUG is the highest.
+
+An example base message is `timestamp=2025-12-13T23:33:11+1100 service=tlsproxy process_type=master pid=8264 level=INFO`.
+
+### Startup Event
+
+This is sent by the master process and will contain (over the base schema):
+- `event`: "startup".
+- `argv`: The arguments given during process start.
+- `version`: The version of the software loaded.
+
+### Worker Spawned Event
+
+This is sent by the master process when it creates workers:
+- `event`: "worker_spawned".
+- `worker_id`: The internal ID of the worker. 
+- `worker_pid`: The PID of the worker.
+
+### Worker Died Event
+
+This will be triggered whenever a fatal error happens on a worker that causes it to perish. It will be sent by the master process upon receiving `SIGCHLD` and not the dead worker process, because it's not guaranteed that the worker has the means to send a log event. Schema:
+- `event`: "worker_died".
+- `worker_id`: The internal ID of the worker. 
+- `worker_pid`: The PID of the worker.
+
+### Config Loaded Event
+
+This is called whenever the configuration file is (re)loaded. It will contain the major config info:
+- `event`: "config_loaded".
+- `nworkers`: The number of workers to create.
+- `certchain`: (Optional) The cert chain file.
+- `cacerts`: (Optional) A list of CA certificate files separated by ':'.
+- `servcert`: (Optional) The server certificate file.
+- `servkey`: The server certificate file.
+
+### Startup Error Events
+
+- `event`: "config\_error", "system\_error".
+- `error_msg`: The message provided by TLS Proxy.
+- `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing.
+
+### Proxy Events
+
+- `event`: "client\_connect", "server\_connect", "client\_disconnect", "server\_disconnect"
+- `client_ip`: Client's remote IP address.
+- `listen_address`: The address we're listening on.
+- `listen_port`: The listen port on which we accepted the connection.
+- `server_ip`: Server's remote IP address.
+- `server_port`: The port of the server.
+- `error_msg`: The message provided by TLS Proxy.
+- `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing.
+- `ciphersuite`: (Only for "handshake" events) The ciphersuite chosen.
+
+### Handshake event
+
+- `event`: "handshake"
+- `outcome`: "granted", "denied", or "failed". If it's "denied" then there was a security problem, if it's "failed" there was a system problem.
+- `client_ip`: Client's remote IP address.
+- `listen_address`: The address we're listening on.
+- `listen_port`: The listen port on which we accepted the connection.
+- `error_msg`: The message provided by TLS Proxy.
+- `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing.
+- `ciphersuite`: (If "granted") The ciphersuite chosen.
+
+### MTLS Event
+
+This isn't implemented yet, but it will be fired when MTLS is attempted, whether it succeeds or fails.
+
+- `event`: "mtls\_auth"
+- `outcome`: "granted", "denied", or "failed". If it's "denied" then there was a security problem, if it's "failed" there was a system problem.
+- `client_cert_fingerprint`: The SHA256 fingerprint of the client certificate.
+- `client_cert_subject`: The subject of the client certificate.
+- `client_cert_issuer`: The issuer of the client certificate.
+- `error_desc`: (If outcome is denied) The human-readable reason why verification failed.
+- `error_code`: The OpenSSL error code for the error.

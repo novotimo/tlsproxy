@@ -178,7 +178,7 @@ int _linebuf_add_metadata(linebuf_t *linebuf, int is_master, loglevel_t level) {
                           "timestamp=%s service=%s "
                           "process_type=%s pid=%s level=%s ",
                           _rfc3339_time(), "tlsproxy",
-                          _pid(), is_master ? "master" : "worker",
+                          is_master ? "master" : "worker", _pid(),
                           strlevel(level));
     if (len >= sizeof(metadata))
         len = sizeof(metadata)-1;
