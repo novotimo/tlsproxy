@@ -27,7 +27,7 @@ shared_t *g_shmem;
 
 
 // Returns the new write index
-int _linebuf_add_metadata(linebuf_t *linebuf, int is_master);
+int _linebuf_add_metadata(linebuf_t *linebuf, int is_master, loglevel_t level);
 int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                    int sanitize);
 int _linebuf_append_cb(const char *str, size_t len, void *u);
@@ -140,11 +140,17 @@ const char *_pid() {
     return pid;
 }
 
-int _linebuf_add_metadata(linebuf_t *linebuf, int is_master) {
+const char *strlevel(loglevel_t level) {
+    static char levels[5][6] = {"FATAL", "ERROR", "WARN", "INFO", "DEBUG"};
+    return levels[level];
+}
+
+int _linebuf_add_metadata(linebuf_t *linebuf, int is_master, loglevel_t level) {
     static char metadata[128];
     size_t len = snprintf(metadata, sizeof(metadata),
-                          "%s %s[%s]: ", _rfc3339_time(), _pid(),
-                          is_master ? "master" : "worker");
+                          "%s %s[%s] %s: ", _rfc3339_time(), _pid(),
+                          is_master ? "master" : "worker",
+                          strlevel(level));
     if (len >= sizeof(metadata))
         len = sizeof(metadata)-1;
     return _linebuf_append(linebuf, metadata, len, 0);
@@ -158,7 +164,7 @@ void m_log_msg(int logfd, loglevel_t level, const char *fmt, ...) {
 
     static linebuf_t linebuf;
     linebuf.len = 0;
-    if (_linebuf_add_metadata(&linebuf, 1) == -1) {
+    if (_linebuf_add_metadata(&linebuf, 1, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line!\n");
         return;
     }
@@ -192,7 +198,7 @@ void m_log_ossl(int logfd, loglevel_t level, const char *description) {
 
     static linebuf_t linebuf;
     linebuf.len = 0;
-    if (_linebuf_add_metadata(&linebuf, 1) == -1) {
+    if (_linebuf_add_metadata(&linebuf, 1, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line\n");
         return;
     }
@@ -273,7 +279,7 @@ void log_msg(loglevel_t level, const char *fmt, ...) {
     static linebuf_t linebuf;
     linebuf.len = 0;
     
-    if (_linebuf_add_metadata(&linebuf, 0) == -1) {
+    if (_linebuf_add_metadata(&linebuf, 0, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line!\n");
         return;
     }
@@ -310,7 +316,7 @@ void log_ossl(loglevel_t level, const char *description) {
 
     static linebuf_t linebuf;
     linebuf.len = 0;
-    if (_linebuf_add_metadata(&linebuf, 0) == -1) {
+    if (_linebuf_add_metadata(&linebuf, 0, level) == -1) {
         fprintf(stderr, "Couldn't write metadata to log line!\n");
         return;
     }

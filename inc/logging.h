@@ -14,11 +14,11 @@
 
 
 typedef enum loglevel {
-    LL_FATAL,
-    LL_ERROR,
-    LL_WARN,
-    LL_INFO,
-    LL_DEBUG
+    LL_FATAL = 0,
+    LL_ERROR = 1,
+    LL_WARN  = 2,
+    LL_INFO  = 3,
+    LL_DEBUG = 4
 } loglevel_t;
 
 typedef struct logger_s {
