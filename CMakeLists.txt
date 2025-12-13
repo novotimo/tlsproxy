@@ -12,7 +12,7 @@ if (UNIT_TESTING)
 endif()
 
 if (ASAN)
-  add_compile_options(-fsanitize=address -g)
+  add_compile_options(-fsanitize=address)
   add_link_options(-fsanitize=address -static-libasan)
 endif()
 
