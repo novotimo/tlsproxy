@@ -2,15 +2,19 @@
 #define __TLSPROXY_LOGGING_H
 
 
+#include <ctype.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <pthread.h>
 
 
-#define TPX_LOGBUF_SIZE 16384
+// TODO: Try various sizes under load
+#define TPX_LOGBUF_SIZE 128000
+#define TPX_LOG_LINE_MAX 8192
 
 
 typedef enum loglevel {
-    LL_NONE,
+    LL_FATAL,
     LL_ERROR,
     LL_WARN,
     LL_INFO,
@@ -28,17 +32,31 @@ typedef struct logger_s {
       * to write. If the buffer is full, read_idx will stop at write_idx-1
       * or read_idx=0 and write_idx=TPX_LOGBUF_SIZE-1
       */
-    uint64_t read_idx;
-    uint64_t write_idx; /**< @brief The index from which to start writing */
+    uint32_t read_idx;
+    uint32_t write_idx; /**< @brief The index from which to start writing */
     pthread_mutex_t write_lock; /**< @brief One at a time, workers */
     char log_buf[TPX_LOGBUF_SIZE]; /**< @brief A ring buffer containing log
                                       messages to write */
 } logger_t;
 
+// For master process
 void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
-void log_msg(loglevel_t level, const char *fmt, ...);
-void log_ossl(loglevel_t level, const char *description);
-void log_err(loglevel_t level, const char *description);
+void m_log_msg(int logfd, loglevel_t level, const char *fmt, ...);
+void m_log_fatal(int logfd, const char *description, int has_errno);
+void m_log_ossl(int logfd, loglevel_t level, const char *description);
+void m_log_errno(int logfd, loglevel_t level, const char *description);
 
+// For worker processes
+void log_msg(loglevel_t level, const char *fmt, ...);
+void log_fatal(const char *description, int has_errno);
+void log_ossl(loglevel_t level, const char *description);
+void log_errno(loglevel_t level, const char *description);
+
+// Sanitize characters one by one, but stop if we reach endptr
+int sanitize_c(const char c, char *outptr, const char *endptr);
+
+/* Internal functions */
+
+int _ringbuf_fits(logger_t *logger, uint32_t len);
 
 #endif

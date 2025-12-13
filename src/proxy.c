@@ -32,7 +32,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       unsigned int conn_timeout) {
     proxy_t *proxy = malloc(sizeof(proxy_t));
     if (!proxy) {
-        perror("create_proxy: malloc");
+        log_errno(LL_ERROR, "Couldn't allocate memory for proxy");
         return NULL;
     }
 
@@ -61,7 +61,6 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
         // fd hasn't been added to epoll yet, and SSL will be freed outside
         free(proxy);
         
-        log_msg(LL_WARN, "create_proxy: couldn't create connect socket");
         proxy = NULL;
     }
 
@@ -72,33 +71,30 @@ int create_connect(proxy_t *proxy) {
     assert(proxy);
     int conn_sock = socket(proxy->server_addr.ss_family, SOCK_STREAM, 0);
     if (conn_sock < 0) {
-        perror("create_connect: socket");
+        log_errno(LL_ERROR, "Couldn't create connect socket");
         return -1;
     }
     
     int sock_flags;
     if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
-        perror("create_connect: fcntl(GETFL)");
+        log_errno(LL_ERROR, "Couldn't get socket flags of connect socket");
         return -1;
     }
     if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
-        perror("create_connect: fcntl(SETFL)");
+        log_errno(LL_ERROR, "Couldn't set connect socket to non-blocking mode");
         return -1;
     }
     return conn_sock;
 }
 
 tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
-    log_msg(LL_DEBUG, "proxy_handle_connect state=%d", proxy->state);
     assert(proxy->state == PS_CLIENT_CONNECTED ||
            proxy->state == PS_SERVER_CONNECTING);
     int retcode = connect(proxy->serv_fd,
                           (struct sockaddr *)&proxy->server_addr,
                           proxy->server_addrlen);
-    log_msg(LL_DEBUG, "proxy_handle_connect connect returned %d, errno %d",
-            retcode, errno);
     if (retcode == -1 && errno != EINPROGRESS) {
-        log_err(LL_WARN, "proxy_handle_connect: connect");
+        log_errno(LL_ERROR, "Couldn't connect socket");
         return TPX_FAILURE;
     } else if (retcode == -1 && errno == EINPROGRESS) {
         if (proxy->state == PS_CLIENT_CONNECTED) {
@@ -108,16 +104,12 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
             ngx_rbtree_insert(&timeouts, &proxy->timer);
             proxy->timer_set = 1;
         }
-        log_msg(LL_DEBUG, "proxy_handle_connect returning TPX_AGAIN");
         return TPX_AGAIN;
     } else if (retcode == 0 && proxy->state == PS_CLIENT_CONNECTED) {
-        log_msg(LL_DEBUG, "proxy_handle_connect returning TPX_SUCCESS");
         return TPX_SUCCESS;
     } else {
         ngx_rbtree_delete(&timeouts, &proxy->timer);
         proxy->timer_set = 0;
-        log_msg(LL_DEBUG, "proxy_handle_connect deleting timeout and "
-                "returning TPX_SUCCESS");
         return TPX_SUCCESS;
     }
 }
@@ -132,15 +124,15 @@ tpx_err_t proxy_add_to_epoll(proxy_t *proxy, int epollfd) {
     ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
     ev.data.ptr = serv_proxy;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serv_proxy->serv_fd, &ev) == -1) {
-        perror("Couldn't add server socket to epoll");
+        log_errno(LL_ERROR, "Couldn't add server socket to epoll");
         return TPX_FAILURE;
     }
     
     ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
     ev.data.ptr = client_proxy;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, serv_proxy->client_fd, &ev) == -1) {
+        log_errno(LL_ERROR, "Couldn't add client socket to epoll");
         epoll_ctl(epollfd, EPOLL_CTL_DEL, serv_proxy->serv_fd, NULL);
-        perror("Couldn't add client socket to epoll");
         return TPX_FAILURE;
     }
     return TPX_SUCCESS;
@@ -170,14 +162,12 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
     }
     
     if (epollfd != -1 && proxy->serv_fd != -1) {
-        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->serv_fd, NULL) == -1) {
-            perror("proxy_close: epoll_ctl(serv)");
-        }
+        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->serv_fd, NULL) == -1)
+            log_errno(LL_WARN, "Failure deleting server socket from epoll");
     }
     if (epollfd != -1 && proxy->client_fd != -1) {
-        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->client_fd, NULL) == -1) {
-            perror("proxy_close: epoll_ctl(client)");
-        }
+        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proxy->client_fd, NULL) == -1)
+            log_errno(LL_WARN, "Failure deleting client socket from epoll");
     }
 
     queue_free(proxy->c2s);
@@ -193,8 +183,6 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
 
 tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                        void *ssl_ctx, uint8_t tag, unsigned int conn_timeout) {
-    log_msg(LL_DEBUG, "handle_proxy state=%d, events=%u, tag=%hhu",
-            proxy->state, events, tag);
     tpx_err_t ret = TPX_SUCCESS;
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
@@ -245,15 +233,12 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             return TPX_SUCCESS;
     }
 
-    // This should actually be an assert
-    log_msg(LL_ERROR, "Corrupted event: proxy has wrong state %d\n",
+    log_msg(LL_ERROR, "This event is corrupted: unexpected state %d",
             proxy->state);
     return TPX_FAILURE;
 }
 
 tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
-    log_msg(LL_DEBUG, "proxy_handle_read as %s",
-            is_client ? "client" : "server");
     unsigned char *rdbuf = NULL;
     size_t buflen = 0;
 
@@ -284,13 +269,12 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         // Use existing chunk
         switch (queue_peek_last(in_bufq, &rdbuf, &buflen)) {
         case TPX_FAILURE:
-            log_msg(LL_ERROR, "proxy_handle_read: The queue @ 0x%p is "
-                    "corrupted\n", in_bufq);
+            log_msg(LL_ERROR, "The queue @ 0x%p is corrupted! To stay safe,"
+                    " the memory will be leaked", in_bufq);
             return TPX_FAILURE;
         case TPX_EMPTY:
-            log_msg(LL_ERROR, "proxy_handle_read: The queue @ 0x%p is "
-                    "corrupted: in_bufq->write_idx isn't -1 with an empty "
-                    "queue\n", in_bufq);
+            log_msg(LL_ERROR, "The queue @ 0x%p is corrupted: in_bufq->"
+                    "write_idx isn't -1 but the queue is empty", in_bufq);
             return TPX_FAILURE;
         case TPX_SUCCESS:
         default:
@@ -324,7 +308,7 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
             return TPX_CLOSED;
         }
     } else if (!is_client && nbytes == -1 && errno != EAGAIN) {
-        log_err(LL_INFO, "proxy_handle_read");
+        log_errno(LL_INFO, "Couldn't read bytes from server socket");
         return TPX_CLOSED;
     }
 
@@ -332,8 +316,6 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
 }
 
 tpx_err_t proxy_process_data(proxy_t *proxy, int is_client) {
-    log_msg(LL_DEBUG, "proxy_process_data as %s",
-            is_client ? "client" : "server");
     return proxy_handle_write(proxy, !is_client);
 }
 
@@ -352,8 +334,6 @@ int outbuf_empty(proxy_t *proxy, int is_client) {
 }
 
 tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
-    log_msg(LL_DEBUG, "proxy_handle_write as %s",
-            is_client ? "client" : "server");
     if (outbuf_empty(proxy, is_client))
         return TPX_SUCCESS;
 
@@ -385,8 +365,8 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     
         switch (queue_peek(out_bufq, &wbuf, &wbuflen)) {
         case TPX_FAILURE:
-            log_msg(LL_ERROR, "proxy_handle_write: The queue @ 0x%p is "
-                   "corrupted\n", out_bufq);
+            log_msg(LL_ERROR, "The queue @ 0x%p is corrupted! To stay safe,"
+                    " the memory will be leaked", out_bufq);
             return TPX_FAILURE;
         case TPX_SUCCESS:
         default:
@@ -421,7 +401,7 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
                 return proxy_handle_ssl_failure(proxy->ssl, nsent);
             } else if (!is_client && nsent == -1) {
                 if (errno != EAGAIN) {
-                    log_err(LL_INFO, "proxy_handle_write");
+                    log_errno(LL_INFO, "Couldn't send bytes to server socket");
                     return TPX_CLOSED;
                 }
                 return TPX_SUCCESS;
@@ -447,18 +427,17 @@ tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd) {
 
 tpx_err_t proxy_handle_ssl_failure(SSL *ssl, int retcode) {
     int sslerr = SSL_get_error(ssl, retcode);
-    log_msg(LL_DEBUG, "proxy_handle_ssl_failure err=%d", sslerr);
     switch(SSL_get_error(ssl, retcode)) {
     case SSL_ERROR_WANT_READ:
     case SSL_ERROR_WANT_WRITE:
         return TPX_SUCCESS;
     case SSL_ERROR_SYSCALL:
-        log_err(LL_WARN, "proxy_handle_ssl_failure");
+        log_errno(LL_ERROR, "Couldn't communicate with client socket");
         return TPX_CLOSED;
     case SSL_ERROR_ZERO_RETURN:
         return TPX_CLOSED;
     default:
-        log_ossl(LL_WARN, "proxy_handle_ssl_failure");
+        log_ossl(LL_ERROR, "Couldn't communicate with client socket");
         return TPX_CLOSED;
     }
 }
