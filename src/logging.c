@@ -150,8 +150,10 @@ const char *strlevel(loglevel_t level) {
 int _linebuf_add_metadata(linebuf_t *linebuf, int is_master, loglevel_t level) {
     static char metadata[128];
     size_t len = snprintf(metadata, sizeof(metadata),
-                          "%s %s[%s] %s: ", _rfc3339_time(), _pid(),
-                          is_master ? "master" : "worker",
+                          "timestamp=%s service=%s "
+                          "process_type=%s pid=%s level=%s ",
+                          _rfc3339_time(), "tlsproxy",
+                          _pid(), is_master ? "master" : "worker",
                           strlevel(level));
     if (len >= sizeof(metadata))
         len = sizeof(metadata)-1;

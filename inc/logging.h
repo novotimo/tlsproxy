@@ -53,6 +53,6 @@ void log_errno(loglevel_t level, const char *description);
 // Sanitize characters one by one, but stop if we reach endptr
 int sanitize_c(const char c, char *outptr, const char *endptr);
 
-/* Internal functions */
+
 
 #endif

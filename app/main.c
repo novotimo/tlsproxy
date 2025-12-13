@@ -187,13 +187,19 @@ void parent_loop(tpx_config_t *config,
     // Add eventfd
     ev.events = EPOLLIN;
     ev.data.fd = efd;
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev) == -1)
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev) == -1) {
+        for (int i=0; i<config->nworkers; ++i)
+            kill(pids[i], SIGKILL);
         m_log_fatal(logfd, "epoll_ctl: eventfd", 1);
+    }
     // Add signalfd
     ev.events = EPOLLIN;
     ev.data.fd = sigfd;
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &ev) == -1)
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &ev) == -1) {
+        for (int i=0; i<config->nworkers; ++i)
+            kill(pids[i], SIGKILL);
         m_log_fatal(logfd, "epoll_ctl: signalfd", 1);
+    }
 
     for (;;) {
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
