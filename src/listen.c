@@ -86,7 +86,6 @@ listen_t *create_listener(const char *lhost, const unsigned short lport,
     
     if (listen(lsock, SOMAXCONN) < 0)
         err(EXIT_FAILURE, "create_listener: listen");
-
     
     listen_t *listen = malloc(sizeof(listen_t));
     if (!listen)
@@ -178,6 +177,7 @@ tpx_err_t get_conn(const char *host, const unsigned short port,
 
     memcpy(addr, connect_addr->ai_addr, connect_addr->ai_addrlen);
     *len = connect_addr->ai_addrlen;
-
+    
+    freeaddrinfo(connect_addr);
     return TPX_SUCCESS;
 }

@@ -143,22 +143,22 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
         ngx_rbtree_delete(&timeouts, &proxy->timer);
         proxy->timer_set = 0;
     }
-    if (proxy->state == PS_CLIENT_DISCONNECTED) {
+    switch (proxy->state) {
+    case PS_CLIENT_CONNECTED:
+    case PS_CLIENT_DISCONNECTED:
+    case PS_SERVER_CONNECTING:
+    case PS_READY:
         if (proxy->ssl)
             SSL_free(proxy->ssl);
         proxy->ssl = NULL;
-    } else if (proxy->state == PS_SERVER_DISCONNECTED) {
-        if (proxy->ssl) {
-            // If the shutdown isn't done yet
-            if (SSL_shutdown(proxy->ssl) == 0)
-                return TPX_AGAIN;
-            SSL_free(proxy->ssl);
-            proxy->ssl = NULL;
-        }
-    } else if (proxy->state == PS_SERVER_CONNECTING) {
-        if (proxy->ssl)
-            SSL_free(proxy->ssl);
+        break;
+    case PS_SERVER_DISCONNECTED:
+        // If the shutdown isn't done yet
+        if (SSL_shutdown(proxy->ssl) == 0)
+            return TPX_AGAIN;
+        SSL_free(proxy->ssl);
         proxy->ssl = NULL;
+        break;
     }
     
     if (epollfd != -1 && proxy->serv_fd != -1) {
@@ -321,6 +321,7 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         }
     } else if (!is_client && nbytes == 0) {
         log_msg(LL_DEBUG, "Got EOF on server socket");
+        return TPX_CLOSED;
     }
 
     return proxy_process_data(proxy, is_client);
