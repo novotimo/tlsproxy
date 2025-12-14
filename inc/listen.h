@@ -12,6 +12,9 @@ typedef struct listen_s {
     uint8_t event_id; /**< @brief EV_LISTEN */
     int fd; /**< @brief The listening socket */
 
+    struct sockaddr_storage listen_addr;
+    socklen_t listen_addrlen;
+
     struct sockaddr_storage peer_addr; /**< @brief The target address to connect
                                         * to once we get a connection on this */
     socklen_t peer_addrlen; /**< @brief The address length of peer_addr */
@@ -52,12 +55,14 @@ listen_t *create_listener(const char *lhost, const unsigned short lport,
 
 /**
  * @brief Creates a socket and binds to it
+ * @param listen The listener, so that we can put the address in.
  * @param host The hostname or IP address of the local interface to
  *        bind to. This can be 0.0.0.0 or ::0 to bind to all addresses.
  * @param port The port to bind to.
  * @return The socket we've bound to. If no socket could be bound, just exit.
  */
-int bind_listen_sock(const char *host, const unsigned short port);
+int bind_listen_sock(listen_t *listen, const char *host,
+                     const unsigned short port);
 
 /**
  * @brief Resolves a remote host into a struct sockaddr

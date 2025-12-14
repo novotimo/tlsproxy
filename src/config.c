@@ -7,7 +7,7 @@
 /**
  * Verify config rules that can't be verified by YAML parser
  */
-int tpx_validate_conf(struct tpx_config *config) {
+int tpx_validate_conf(tpx_config_t *config) {
     if (!config->cert_chain && !config->cacerts) {
         fprintf(stderr, "Config error: either 'cert-chain' or 'cacerts' must be"
                 " provided.\n");

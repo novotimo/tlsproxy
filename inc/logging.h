@@ -4,11 +4,32 @@
 
 #include <stdint.h>
 #include <pthread.h>
+#include <openssl/x509.h>
 
 
 // TODO: Try various sizes under load
-#define TPX_LOGBUF_SIZE 128000
+#define TPX_LOGBUF_SIZE 65535
 #define TPX_LOG_LINE_MAX 8192
+#define TPX_LOG_ARGV_MAX 256
+#define TPX_IPV6_MAXLEN 46
+
+#define TPX_ERR_PLAIN 0
+#define TPX_ERR_ERRNO 1
+#define TPX_ERR_OSSL  2
+
+#define TPX_WORKER_DEAD 1
+#define TPX_WORKER_ALIVE 1
+
+
+// Audit events
+#define STARTUP_EVENT "startup"
+#define WORKER_EVENT "worker"
+#define CONFIG_LOAD_EVENT "config_loaded"
+#define CERT_LOAD_EVENT "cert_loaded"
+#define ERR_EVENT "system_error"
+#define SIGNAL_EVENT "signal_received"
+#define PROXY_EVENT "proxy"
+#define HANDSHAKE_EVENT "handshake"
 
 
 typedef enum loglevel {
@@ -37,23 +58,31 @@ typedef struct logger_s {
                                       messages to write */
 } logger_t;
 
+typedef struct tpx_config_s tpx_config_t;
+struct signalfd_siginfo;
+typedef struct proxy_s proxy_t;
+
+
 // For master process
 void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
-void m_log_msg(int logfd, loglevel_t level, const char *fmt, ...);
-void m_log_fatal(int logfd, const char *description, int has_errno);
-void m_log_ossl(int logfd, loglevel_t level, const char *description);
-void m_log_errno(int logfd, loglevel_t level, const char *description);
 
-// For worker processes
-void log_msg(loglevel_t level, const char *fmt, ...);
-void log_fatal(const char *description, int has_errno);
-void log_ossl(loglevel_t level, const char *description);
-void log_errno(loglevel_t level, const char *description);
+// Message schemas (Master). _m refers to master versions of functions
+void log_startup(int logfd, loglevel_t level, int argc, char *argv[]);
+void log_worker(int logfd, loglevel_t level, int worker_state, int worker_id,
+                pid_t worker_pid);
+void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config);
+void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client);
+void log_system_err_m(int logfd, loglevel_t level, const char *msg,
+                      int errtype);
+void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si);
 
-// Sanitize characters one by one, but stop if we reach endptr
-int sanitize_c(const char c, char *outptr, const char *endptr);
-
-// Message schemas
+// Message schemas (Workers)
+void log_system_err(loglevel_t level, const char *msg, int errtype);
+void log_signal(loglevel_t level, struct signalfd_siginfo *si);
+// If desc is null it get the OpenSSL error queue instead
+void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
+               const char *msg, const char *desc);
+void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome);
 
 
 #endif

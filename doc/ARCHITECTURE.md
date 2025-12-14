@@ -153,7 +153,7 @@ The listener context just contains the listen socket and the peer address, used 
 
 ## Log messages
 
-Logging will output in key-value format to a simple log file. The main aim for the logger is to allow easy integration with any log analysis or monitoring system, as I imagine this to be important for many users. The log messages can be treated as audit events, each having an event type. The schema is as so:
+Logging will output in key-value format to a simple log file. The main aim for the logger is to allow easy integration with any log analysis or monitoring system, as I imagine this to be important for many users. The log messages can be treated as audit events, each having an event type. For now, the logger will chose to not send incomplete log messages, but eventually there will be a system to truncate log messages while keeping the key-value format parseable. The schema is as so:
 
 ### Base schema
 
@@ -163,8 +163,10 @@ All other schemas will inherit from this. Each log event has:
 - `process_type`: "worker" or "master", depending on whether this is an event from the master process or a worker process.
 - `pid`: The process id.
 - `level`: The log level. This is one of FATAL, ERROR, WARN, INFO, or DEBUG, where FATAL is the lowest and DEBUG is the highest.
+- `event`: The specific event name will be one of the events described after this.
 
-An example base message is `timestamp=2025-12-13T23:33:11+1100 service=tlsproxy process_type=master pid=8264 level=INFO`.
+An example base message is `timestamp=2025-12-13T23:33:11+1100 service=tlsproxy process_type=master pid=8264 level=INFO event=handshake`.
+
 
 ### Startup Event
 
@@ -173,17 +175,11 @@ This is sent by the master process and will contain (over the base schema):
 - `argv`: The arguments given during process start.
 - `version`: The version of the software loaded.
 
-### Worker Spawned Event
+### Worker Event
 
 This is sent by the master process when it creates workers:
-- `event`: "worker_spawned".
-- `worker_id`: The internal ID of the worker. 
-- `worker_pid`: The PID of the worker.
-
-### Worker Died Event
-
-This will be triggered whenever a fatal error happens on a worker that causes it to perish. It will be sent by the master process upon receiving `SIGCHLD` and not the dead worker process, because it's not guaranteed that the worker has the means to send a log event. Schema:
-- `event`: "worker_died".
+- `event`: "worker"
+- `worker_state`: "dead", "spawned"
 - `worker_id`: The internal ID of the worker. 
 - `worker_pid`: The PID of the worker.
 
@@ -197,43 +193,60 @@ This is called whenever the configuration file is (re)loaded. It will contain th
 - `servcert`: (Optional) The server certificate file.
 - `servkey`: The server certificate file.
 
-### Startup Error Events
+### Cert Loaded Event
 
-- `event`: "config\_error", "system\_error".
+This is called whenever we load a certificate, and is useful mainly in the case of hot reloading, and verifying that the hot reload worked:
+- `event`: "cert_loaded".
+- `cert_role`: "leaf", "server\_ca", or "client\_ca".
+- `cert_fingerprint`: The certificate fingerprint.
+- `cert_notbefore`: The date at which the cert becomes active.
+- `cert_notafter`: The date at which the cert expires.
+- `cert_subject`: The subject of the certificate.
+- `cert_issuer`: The issuer of the certificate.
+
+### System Error Events
+
+These are errors that occur during startup and aren't related to a proxy, and can be sent from both master and worker processes.
+- `event`: "system\_error".
 - `error_msg`: The message provided by TLS Proxy.
-- `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing.
+- `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing. OpenSSL errors are included in system errors.
+
+### Signal Received Events
+
+This can be sent from either a worker or master process. It shows that a signal was received.
+
+- `event`: "signal\_received"
+- `signal_num`: The signal number as an integer.
+- `signal_string`: The string representing the signal (from `strsignal()`)
+- `recvd_from`: The PID of the program that sent this signal.
 
 ### Proxy Events
 
-- `event`: "client\_connect", "server\_connect", "client\_disconnect", "server\_disconnect"
+- `event`: "proxy"
+- `subevent`: "client\_connect", "server\_connect", "client\_disconnect", "server\_disconnect"
 - `client_ip`: Client's remote IP address.
-- `listen_address`: The address we're listening on.
+- `client_port`: Client's remote port.
+- `listen_ip`: The address we're listening on.
 - `listen_port`: The listen port on which we accepted the connection.
 - `server_ip`: Server's remote IP address.
 - `server_port`: The port of the server.
-- `error_msg`: The message provided by TLS Proxy.
-- `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing.
-- `ciphersuite`: (Only for "handshake" events) The ciphersuite chosen.
+- `error_msg`: The message provided by TLS Proxy (if this is a disconnect event).
+- `error_desc`: (Optional) The human-readable error description for the error code (if this is an ioerror). If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing. If we close due to the other socket closing, this field won't be attached.
 
-### Handshake event
+### Auth Events
 
-- `event`: "handshake"
+These sub events are logged separately because of how OpenSSL works.
+
+- `event`: "auth"
+- `subevent`: "handshake" or "mtls"
 - `outcome`: "granted", "denied", or "failed". If it's "denied" then there was a security problem, if it's "failed" there was a system problem.
 - `client_ip`: Client's remote IP address.
-- `listen_address`: The address we're listening on.
+- `client_port`: Client's remote port.
+- `listen_ip`: The address we're listening on.
 - `listen_port`: The listen port on which we accepted the connection.
 - `error_msg`: The message provided by TLS Proxy.
 - `error_desc`: The human-readable error description for the error code. If it's a libc error, this is `strerror(errno)`. If it's an OpenSSL error, this contains the OpenSSL error queue, with all newlines escaped so that it can be un-flattened for pretty printing.
-- `ciphersuite`: (If "granted") The ciphersuite chosen.
-
-### MTLS Event
-
-This isn't implemented yet, but it will be fired when MTLS is attempted, whether it succeeds or fails.
-
-- `event`: "mtls\_auth"
-- `outcome`: "granted", "denied", or "failed". If it's "denied" then there was a security problem, if it's "failed" there was a system problem.
-- `client_cert_fingerprint`: The SHA256 fingerprint of the client certificate.
-- `client_cert_subject`: The subject of the client certificate.
-- `client_cert_issuer`: The issuer of the client certificate.
-- `error_desc`: (If outcome is denied) The human-readable reason why verification failed.
-- `error_code`: The OpenSSL error code for the error.
+- `ciphersuite`: (If it's a successful handshake) The ciphersuite chosen.
+- `client_cert_fingerprint`: (For mtls) The SHA256 fingerprint of the client certificate.
+- `client_cert_subject`: (For mtls) The subject of the client certificate.
+- `client_cert_issuer`: (For mtls) The issuer of the client certificate.

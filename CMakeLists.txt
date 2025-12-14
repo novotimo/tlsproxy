@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(TLSProxy)
+project(TLSProxy VERSION 0.9.0 LANGUAGES C)
 
 if (UNIT_TESTING)
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
@@ -15,6 +15,12 @@ if (ASAN)
   add_compile_options(-fsanitize=address)
   add_link_options(-fsanitize=address -static-libasan)
 endif()
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/inc/version.h.in
+  ${CMAKE_SOURCE_DIR}/inc/version.h
+  @ONLY
+)
 
 
 find_package(OpenSSL REQUIRED)
@@ -39,6 +45,7 @@ target_sources(proxy
   src/timeutils.c
   external/ngx_rbtree.c
 )
+#set_property(TARGET proxy PROPERTY C_STANDARD 99)
 
 add_executable(tlsproxy)
 
@@ -48,6 +55,7 @@ target_sources(tlsproxy
   app/main.c
 )
 target_include_directories(tlsproxy PRIVATE inc external)
+set_property(TARGET tlsproxy PROPERTY C_STANDARD 99)
 
 if (UNIT_TESTING)
   # This is actually 2.0.0 but they forgot to version bump

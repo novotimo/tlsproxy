@@ -10,7 +10,7 @@
 
 
 /** @brief The configuration of the TLS Proxy */
-typedef struct tpx_config {
+typedef struct tpx_config_s {
     unsigned int nworkers; /**< @brief The number of worker processes. */
     const char *logfile; /**< @brief The file to write logs into. */
     loglevel_t *loglevel; /**< @brief Don't print messages higher than this log

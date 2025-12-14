@@ -34,6 +34,8 @@ typedef enum proxy_state_e {
                             * the proxy and close sockets */
 } proxy_state_t;
 
+typedef struct listen_s listen_t;
+
 /**
  * @brief The data structure shared between both fds of a proxy tunnel.
  *
@@ -58,13 +60,18 @@ typedef struct proxy_s {
     int serv_fd; /**< @brief The client file descriptor.
                     * It must be set to -1 once closed */
 
-    struct sockaddr_storage server_addr; /**< @brief Addr of backend server */
-    socklen_t server_addrlen; /**< @brief Length of server_addr */
+    listen_t *listener;
 
+    struct sockaddr_storage client_addr; /**< @brief Addr of client */
+    socklen_t client_addrlen; /**< @brief Length of client_addr */
+    
     ngx_rbtree_node_t timer; /**< @brief The time when this event expires */
-    uint8_t timer_set;
-
+    
     SSL *ssl; /**< @brief The SSL session context */
+
+    unsigned int timer_set : 1;
+    unsigned int hand_shaken : 1; /**< @brief Whether the handshake is done */
+    
     proxy_state_t state; /**< @brief The current proxy state */
 } proxy_t;
 
@@ -105,8 +112,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
  * @return A pointer to a valid proxy_t if successful, NULL if not.
  */
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
-                      struct sockaddr const* server_addr,
-                      socklen_t server_addrlen,
+                      listen_t *listener,
                       unsigned int conn_timeout);
 
 /**
@@ -180,6 +186,6 @@ void proxy_init_timeouts();
 /** @brief Handle the proxy getting a timeout. */
 tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd);
 
-tpx_err_t proxy_handle_ssl_failure(SSL *ssl, int retcode);
+tpx_err_t proxy_handle_ssl_failure(proxy_t *proxy, int retcode);
 
 #endif

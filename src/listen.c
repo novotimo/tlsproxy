@@ -16,10 +16,6 @@
 #include "proxy.h"
 
 
-int bind_listen_sock(const char *host, const unsigned short port);
-tpx_err_t get_conn(const char *host, const unsigned short port,
-                   struct sockaddr *addr, socklen_t *len);
-
 tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
                         void *ssl_ctx, unsigned int conn_timeout) {
     assert(listen->event_id == EV_LISTEN);
@@ -62,8 +58,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
     // Programmer beware: Make 100% sure that addr gets copied into the proxy
     // ctx rather than just its pointer.
     proxy_t *proxy = create_proxy(conn_sock, ssl,
-                                  (struct sockaddr *)&listen->peer_addr,
-                                  listen->peer_addrlen, conn_timeout);
+                                  listen, conn_timeout);
     if (!proxy) {
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");
@@ -82,30 +77,31 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
 
 listen_t *create_listener(const char *lhost, const unsigned short lport,
                           const char *thost, const unsigned short tport) {
-    int lsock = bind_listen_sock(lhost, lport);
+    listen_t *l = malloc(sizeof(listen_t));
+    if (!l)
+        err(EXIT_FAILURE, "create_listener: malloc");
+    
+    int lsock = bind_listen_sock(l, lhost, lport);
     
     if (listen(lsock, SOMAXCONN) < 0)
         err(EXIT_FAILURE, "create_listener: listen");
-    
-    listen_t *listen = malloc(sizeof(listen_t));
-    if (!listen)
-        err(EXIT_FAILURE, "create_listener: malloc");
 
-    listen->event_id = EV_LISTEN;
-    listen->fd = lsock;
+    l->event_id = EV_LISTEN;
+    l->fd = lsock;
     tpx_err_t ret = get_conn(thost, tport,
-                             (struct sockaddr *)&listen->peer_addr,
-                             &listen->peer_addrlen);
+                             (struct sockaddr *)&l->peer_addr,
+                             &l->peer_addrlen);
     if (ret == TPX_FAILURE) {
         close(lsock);
-        free(listen);
+        free(l);
         errx(EXIT_FAILURE, "create_listener: Couldn't make listener");
     }
 
-    return listen;
+    return l;
 }
 
-int bind_listen_sock(const char *host, const unsigned short port) {
+int bind_listen_sock(listen_t *l, const char *host,
+                     const unsigned short port) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family = AF_UNSPEC;
@@ -152,6 +148,9 @@ int bind_listen_sock(const char *host, const unsigned short port) {
         freeaddrinfo(listen_addr);
         errx(EXIT_FAILURE, "Couldn't bind on any addresses");
     }
+
+    memcpy(&l->listen_addr, lp->ai_addr, lp->ai_addrlen);
+    l->listen_addrlen = lp->ai_addrlen;
 
     freeaddrinfo(listen_addr);
     return fd;

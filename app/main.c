@@ -52,6 +52,9 @@ void load_servcert(tpx_config_t *config, SSL_CTX *ctx, int logfd);
 void load_cacerts(tpx_config_t *config, SSL_CTX *ctx, int logfd);
 void load_servkey(tpx_config_t *config, SSL_CTX *ctx, int logfd);
 
+void _fatal(int logfd, const char *msg, int errtype);
+void _child_fatal(const char *msg, int errtype);
+
 
 static const cyaml_config_t cyaml_config = {
     .log_fn = cyaml_log,
@@ -69,6 +72,18 @@ static inline uint64_t del_tag(void *ptr) {
 void usage(const char *pname) {
     fprintf(stderr, "Usage: %s <config.yml>\n", pname);
     exit(EXIT_FAILURE);
+}
+
+void _fatal(int logfd, const char *msg, int errtype) {
+    log_system_err_m(logfd, LL_FATAL, msg, errtype);
+    // TODO: graceful shutdown
+    errx(EXIT_FAILURE, "%s", msg);
+}
+
+void _child_fatal(const char *msg, int errtype) {
+    log_system_err(LL_FATAL, msg, errtype);
+    // TODO: graceful shutdown
+    errx(EXIT_FAILURE, "%s", msg);
 }
 
 void init_shmem(tpx_config_t *config) {
@@ -112,7 +127,7 @@ void block_signals(sigset_t *mask, int logfd) {
     sigaddset(mask, SIGPIPE);
     sigaddset(mask, SIGCHLD);
     if (sigprocmask(SIG_BLOCK, mask, NULL) == -1)
-        m_log_fatal(logfd, "sigprocmask blocking signals", 1);
+        _fatal(logfd, "sigprocmask failed blocking signals", TPX_ERR_ERRNO);
 }
 
 /** @brief Inits OpenSSL and epoll then passes to main loop */
@@ -127,7 +142,8 @@ int main(int argc, char *argv[]) {
     // Init logging ASAP
     init_shmem(tpx_config);
     int logfd = init_logger(tpx_config);
-    m_log_msg(logfd, LL_INFO, "TLS Proxy v1.0.0 starting");
+    log_startup(logfd, LL_INFO, argc, argv);
+    log_config_load(logfd, LL_INFO, tpx_config);
     
     // This can possibly overwrite environ a bit, but we don't use it anyway
     for (int i=0; i<argc; ++i)
@@ -141,16 +157,18 @@ int main(int argc, char *argv[]) {
     // This has to be done here so we don't need to pass the mask to parent_loop
     int sfd = signalfd(-1, &mask, SFD_CLOEXEC);
     if (sfd == -1)
-        m_log_fatal(logfd, "Couldn't make signalfd", 1);
+        _fatal(logfd, "Couldn't make signalfd", TPX_ERR_ERRNO);
     
     // This has to be done here so workers can access it too
     int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (efd == -1)
-        m_log_fatal(logfd, "Couldn't make eventfd", 1);
+        _fatal(logfd, "Couldn't make eventfd", TPX_ERR_ERRNO);
     
     g_shmem->logger.eventfd = efd;
 
     pid_t *pids = calloc(tpx_config->nworkers, sizeof(pid_t));
+    if (!pids)
+        _fatal(logfd, "Couldn't allocate PID list", TPX_ERR_ERRNO);
     
     // Try with this outside for now
     SSL_CTX *ssl_ctx = init_openssl(tpx_config, logfd);
@@ -158,7 +176,7 @@ int main(int argc, char *argv[]) {
         pid_t pid = fork();
         switch (pid) {
         case -1:
-            m_log_fatal(logfd, "fork", 1);
+            _fatal(logfd, "Couldn't fork worker process", TPX_ERR_ERRNO);
         case 0:
             free(pids);
             sprintf(argv[0], "tlsproxy: worker");
@@ -166,6 +184,7 @@ int main(int argc, char *argv[]) {
             exit(EXIT_SUCCESS);
         default:
             pids[i] = pid;
+            log_worker(logfd, LL_INFO, TPX_WORKER_ALIVE, i, pid);
         }
     }
     parent_loop(tpx_config, pids, logfd, sfd, efd);
@@ -180,7 +199,7 @@ void parent_loop(tpx_config_t *config,
                  int efd) {
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
-        m_log_fatal(logfd, "epoll_create1 master", 1);
+        _fatal(logfd, "Couldn't create epoll fd", TPX_ERR_ERRNO);
     struct epoll_event events[TPX_MAX_EVENTS];
 
     struct epoll_event ev;
@@ -190,7 +209,7 @@ void parent_loop(tpx_config_t *config,
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev) == -1) {
         for (int i=0; i<config->nworkers; ++i)
             kill(pids[i], SIGKILL);
-        m_log_fatal(logfd, "epoll_ctl: eventfd", 1);
+        _fatal(logfd, "Couldn't add eventfd to epoll", TPX_ERR_ERRNO);
     }
     // Add signalfd
     ev.events = EPOLLIN;
@@ -198,7 +217,7 @@ void parent_loop(tpx_config_t *config,
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &ev) == -1) {
         for (int i=0; i<config->nworkers; ++i)
             kill(pids[i], SIGKILL);
-        m_log_fatal(logfd, "epoll_ctl: signalfd", 1);
+        _fatal(logfd, "Couldn't add signalfd to epoll", TPX_ERR_ERRNO);
     }
 
     for (;;) {
@@ -207,15 +226,15 @@ void parent_loop(tpx_config_t *config,
             if (events[n].data.fd == efd) {
                 uint64_t count = 0;
                 if (read(efd, &count, sizeof(count)) < 0) {
-                    m_log_errno(logfd, LL_WARN, "Error reading eventfd");
+                    log_system_err_m(logfd, LL_WARN, "Error reading eventfd",
+                                     TPX_ERR_ERRNO);
                     continue;
                 }
                 write_logs(logfd, &g_shmem->logger, count);
             } else if (events[n].data.fd == sigfd) {
                 struct signalfd_siginfo si;
                 read(sigfd, &si, sizeof(si));
-                m_log_msg(logfd, LL_DEBUG, "Handling signal: %s",
-                          strsignal(si.ssi_signo));
+                log_signal_m(logfd, LL_WARN, &si);
 
                 int sig;
                 if (si.ssi_signo == SIGCHLD)
@@ -225,7 +244,6 @@ void parent_loop(tpx_config_t *config,
 
                 for (int i=0; i<config->nworkers; ++i)
                     kill(pids[i], sig);
-                m_log_msg(logfd, LL_INFO, "Killing all children and exiting");
                 exit(EXIT_SUCCESS);
             }
         }
@@ -241,11 +259,11 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd) {
     sigaddset(&mask, SIGHUP);
     sigaddset(&mask, SIGQUIT);
     if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
-        log_fatal("sigprocmask unblocking signals", 1);
+        _child_fatal("sigprocmask couldn't unblock signals", TPX_ERR_ERRNO);
     
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
-        log_fatal("epoll_create1 worker", 1);
+        _child_fatal("Couldn't create epoll in worker", TPX_ERR_ERRNO);
 
     start_listeners(tpx_config, epollfd);
 
@@ -292,7 +310,8 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd) {
             if (ev_ret == TPX_CLOSED) {
                 it = closed_insert(&closed_set, del_tag(events[n].data.ptr));
                 if (closed_is_end(it))
-                    log_fatal("child_loop: Ran out of memory for hash table",0);
+                    _child_fatal("child_loop: Ran out of memory for hash table",
+                                 TPX_ERR_PLAIN);
             }
         }
         closed_clear(&closed_set);
@@ -307,10 +326,8 @@ tpx_config_t *load_config(const char *config_file) {
                                            &top_schema,
                                            (cyaml_data_t **)&tpx_config, NULL);
     if (conf_err != CYAML_OK) {
-        log_msg(LL_FATAL, "Config error: %s", cyaml_strerror(conf_err));
         errx(EXIT_FAILURE, "Config error: %s", cyaml_strerror(conf_err));
     } else if (tpx_validate_conf(tpx_config) != TPX_SUCCESS) {
-        log_msg(LL_FATAL, "Config file '%s' failed verification", config_file);
         errx(EXIT_FAILURE, "Config file '%s' failed verification", config_file);
     }
     
@@ -328,27 +345,19 @@ void start_listeners(tpx_config_t *tpx_config, int epollfd) {
     ev.events = EPOLLIN;
     ev.data.ptr = listener;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listener->fd, &ev) == -1)
-        log_fatal("epoll_ctl: listen_sock", 1);
+        _child_fatal("Couldn't add listen socket to epoll", TPX_ERR_ERRNO);
 }
 
 /** @brief Inits SSL_CTX for use as a TLS server, loading certs */
 SSL_CTX *init_openssl(tpx_config_t *config, int logfd) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
-    if (ctx == NULL) {
-        m_log_ossl(logfd, LL_FATAL,
-                   "init_openssl: Failed to create OpenSSL CTX");
-        errx(EXIT_FAILURE, "init_openssl: Failed to create OpenSSL CTX, "
-            "see logs for extended error queue");
-    }
+    if (ctx == NULL)
+        _fatal(logfd, "Couldn't create OpenSSL context", TPX_ERR_OSSL);
 
     // TODO: make the ciphersuites and accepted TLS versions configurable
     if (!SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION)) {
         SSL_CTX_free(ctx);
-
-        m_log_ossl(logfd, LL_FATAL, "init_openssl: Failed to set minimum TLS "
-                   "protocol version to TLS 1.2");
-        errx(EXIT_FAILURE, "init_openssl: Failed to set minimum TLS protocol "
-                 "version to TLS 1.2, see logs for extended error queue");
+        _fatal(logfd, "Couldn't set minimum TLS protocol version", TPX_ERR_OSSL);
     }
 
     int opts =
@@ -362,20 +371,18 @@ SSL_CTX *init_openssl(tpx_config_t *config, int logfd) {
         load_servcert(config, ctx, logfd);
         load_cacerts(config, ctx, logfd);
     } else if (config->cert_chain != NULL) {
-        m_log_msg(logfd, LL_INFO, "Loading cert chain from file '%s'\n",
-                config->cert_chain);
         if (SSL_CTX_use_certificate_chain_file(ctx, config->cert_chain) != 1) {
             SSL_CTX_free(ctx);
-            m_log_ossl(logfd, LL_FATAL,
-                       "init_openssl: Failed to load cert chain");
-            errx(EXIT_FAILURE, "init_openssl: Failed to load cert chain, "
-                 "see logs for extended error queue");
+            _fatal(logfd, "Couldn't load cert chain", TPX_ERR_OSSL);
         }
-        m_log_msg(logfd, LL_INFO, "Successfully loaded cert chain file");
+
+        STACK_OF(X509) *certs;
+        SSL_CTX_get0_chain_certs(ctx, &certs);
+        for (int i=0; i<sk_X509_num(certs); ++i)
+            log_cert_load(logfd, LL_INFO, sk_X509_value(certs, i), 0);
     } else {
-        m_log_fatal(logfd, "A programmer error occurred: managed to get a "
-                    "config with both cert-chain and cacerts NULL! Make sure "
-                    "your config only has one of these options set", 0);
+        _fatal(logfd, "Config contains both cert-chain and cacerts",
+               TPX_ERR_PLAIN);
     }
 
     int flags = config->cacerts == NULL
@@ -385,11 +392,8 @@ SSL_CTX *init_openssl(tpx_config_t *config, int logfd) {
 
     if (SSL_CTX_build_cert_chain(ctx, flags) != 1) {
         SSL_CTX_free(ctx);
-        m_log_ossl(logfd, LL_FATAL, "init_openssl: Failed to build cert chain");
-        errx(EXIT_FAILURE, "init_openssl: Failed to build cert chain, "
-             "see logs for extended error queue");
+        _fatal(logfd, "Failed to build cert chain", TPX_ERR_OSSL);
     }
-    m_log_msg(logfd, LL_INFO, "Successfully built and verified cert chain");
 
     load_servkey(config, ctx, logfd);
 
@@ -401,24 +405,18 @@ SSL_CTX *init_openssl(tpx_config_t *config, int logfd) {
 
 /** @brief Load the server certificate into the SSL_CTX */
 void load_servcert(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
-    m_log_msg(logfd, LL_INFO, "Loading server certificate from file '%s'",
-            config->servcert);
     BIO *leaf_bio = BIO_new_file(config->servcert, "r");
     X509 *leaf = NULL;
     if (!PEM_read_bio_X509(leaf_bio, &leaf, NULL, NULL)) {
         BIO_free(leaf_bio);
-        m_log_ossl(logfd, LL_FATAL, "Failed to load server cert");
-        errx(EXIT_FAILURE, "Failed to load server cert, "
-             "see logs for extended error queue");
+        _fatal(logfd, "Failed to load server cert", TPX_ERR_OSSL);
     }
     BIO_free(leaf_bio);
-    m_log_msg(logfd, LL_INFO, "Successfully loaded server certificate");
+    log_cert_load(logfd, LL_INFO, leaf, 0);
         
     if (SSL_CTX_use_certificate(ctx, leaf) != 1) {
         SSL_CTX_free(ctx);
-        m_log_ossl(logfd, LL_FATAL, "Failed to add server certificate to CTX");
-        errx(EXIT_FAILURE, "Failed to add server certificate to CTX, "
-             "see logs for extended error queue");
+        _fatal(logfd, "Failed to add server certificate to CTX", TPX_ERR_OSSL);
     }
 }
 
@@ -427,33 +425,32 @@ void load_cacerts(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
     X509_STORE *store = X509_STORE_new();
     X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
     for (int i=0; i<config->cacerts_count; ++i) {
-        X509_LOOKUP_load_file(lookup, config->cacerts[i], X509_FILETYPE_PEM);
-        m_log_msg(logfd, LL_INFO, "Loaded chain cert '%s'", config->cacerts[i]);
+        if (!X509_LOOKUP_load_file(lookup, config->cacerts[i],
+                                   X509_FILETYPE_PEM))
+            _fatal(logfd, "Couldn't load CA certificate", TPX_ERR_OSSL);
     }
 
     SSL_CTX_set_cert_store(ctx, store);
+    
+    STACK_OF(X509) *certs;
+    SSL_CTX_get0_chain_certs(ctx, &certs);
+    for (int i=0; i<sk_X509_num(certs); ++i)
+        log_cert_load(logfd, LL_INFO, sk_X509_value(certs, i), 0);
 }
 
 /** @brief Load the server private key into the SSL_CTX */
 void load_servkey(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
-    m_log_msg(logfd, LL_INFO, "Loading server key from file '%s'",
-              config->servkey);
     BIO *pkey_bio = BIO_new_file(config->servkey, "r");
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(pkey_bio, NULL, NULL,
                                              (void *)config->servkeypass);
     BIO_free(pkey_bio);
     if (pkey == NULL) {
         SSL_CTX_free(ctx);
-        m_log_ossl(logfd, LL_FATAL, "Failed to read server key");
-        errx(EXIT_FAILURE, "Failed to read server key, "
-             "see logs for extended error queue");
+        _fatal(logfd, "Failed to read server key", TPX_ERR_OSSL);
     }
     
     if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
         SSL_CTX_free(ctx);
-        ERR_print_errors_fp(stderr);
-        m_log_ossl(logfd, LL_FATAL, "Failed to load server key into CTX");
-        errx(EXIT_FAILURE, "Failed to load server key into CTX, "
-             "see logs for extended error queue");
+        _fatal(logfd, "Failed to load server key into ctx", TPX_ERR_OSSL);
     }
 }

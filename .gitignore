@@ -59,3 +59,4 @@ dkms.conf
 /build/
 
 compile_commands.json
+inc/version.h
