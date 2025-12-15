@@ -1,6 +1,6 @@
 ## The number of worker processes, should be the same as your number
 ## of cores.
-nworkers: 1
+nworkers: 16
 logfile: tlsproxy.log
 ## Log levels are: FATAL ERROR WARN INFO DEBUG
 loglevel: DEBUG
