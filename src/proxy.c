@@ -22,6 +22,7 @@
 
 ngx_rbtree_t timeouts;
 static ngx_rbtree_node_t sentinel;
+uint32_t nproxies = 0;
 
 
 int create_connect(proxy_t *proxy);
@@ -68,6 +69,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
 
     log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
 
+    nproxies++;
     return proxy;
 }
 
@@ -201,6 +203,7 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
     if (proxy->client_fd != -1)
         close(proxy->client_fd);
     free(proxy);
+    nproxies--;
     return TPX_CLOSED;
 }
 

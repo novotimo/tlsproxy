@@ -68,12 +68,14 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
 
 // Message schemas (Master). _m refers to master versions of functions
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]);
-void log_worker(int logfd, loglevel_t level, int worker_state, int worker_id,
+void log_worker(int logfd, loglevel_t level, int worker_state,
                 pid_t worker_pid);
 void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config);
 void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client);
 void log_system_err_m(int logfd, loglevel_t level, const char *msg,
                       int errtype);
+void log_system_err_m_ex(int logfd, loglevel_t level, const char *msg,
+                       const char *desc);
 void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si);
 
 // Message schemas (Workers)

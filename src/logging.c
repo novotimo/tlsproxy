@@ -79,9 +79,9 @@ int _linebuf_append_cb(const char *str, size_t len, void *u);
 int _linebuf_append_hex(linebuf_t *linebuf, const unsigned char *buf);
 
 void _log_system_err(linebuf_t *linebuf, loglevel_t level, const char *msg,
-                     int errtype);
+                     int errtype, int is_master);
 void _log_signal(linebuf_t *linebuf, loglevel_t level,
-                 struct signalfd_siginfo *si);
+                 struct signalfd_siginfo *si, int is_master);
 void _write_linebuf(logger_t *logger, linebuf_t *linebuf);
 void _write_linebuf_fd(int logfd, linebuf_t *linebuf);
 
@@ -203,7 +203,7 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
     _write_linebuf_fd(logfd, &linebuf);
 }
 
-void log_worker(int logfd, loglevel_t level, int worker_state, int worker_id,
+void log_worker(int logfd, loglevel_t level, int worker_state,
                         pid_t worker_pid) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
@@ -218,9 +218,6 @@ void log_worker(int logfd, loglevel_t level, int worker_state, int worker_id,
                                     state, strlen(state)));
     
     static char id[12];
-    assert(snprintf(id, sizeof(id), "%d", worker_id) < sizeof(id));
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_id", id, strlen(id)));
-    
     assert(snprintf(id, sizeof(id), "%d", worker_pid) < sizeof(id));
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_pid", id, strlen(id)));
 
@@ -356,7 +353,22 @@ void log_system_err_m(int logfd, loglevel_t level, const char *msg,
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
-    _log_system_err(&linebuf, level, msg, errtype);
+    _log_system_err(&linebuf, level, msg, errtype, 1);
+
+    _write_linebuf_fd(logfd, &linebuf);
+}
+
+void log_system_err_m_ex(int logfd, loglevel_t level, const char *msg,
+                      const char *desc) {
+    static linebuf_t linebuf;
+    linebuf.u.len = LINEBUF_OFFSET;
+
+    GUARD_APPEND(_base_schema(&linebuf, 1, level, ERR_EVENT));
+
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " error_msg", msg,
+                                    strlen(msg)));
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " error_desc", desc,
+                                    strlen(desc)));
 
     _write_linebuf_fd(logfd, &linebuf);
 }
@@ -369,7 +381,7 @@ void log_system_err(loglevel_t level, const char *msg, int errtype) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
-    _log_system_err(&linebuf, level, msg, errtype);
+    _log_system_err(&linebuf, level, msg, errtype, 0);
 
     _write_linebuf(logger, &linebuf);
 }
@@ -378,7 +390,7 @@ void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
-    _log_signal(&linebuf, level, si);
+    _log_signal(&linebuf, level, si, 1);
 
     _write_linebuf_fd(logfd, &linebuf);
 }
@@ -391,7 +403,7 @@ void log_signal(loglevel_t level, struct signalfd_siginfo *si) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
-    _log_signal(&linebuf, level, si);
+    _log_signal(&linebuf, level, si, 0);
 
     _write_linebuf(logger, &linebuf);
 }
@@ -427,7 +439,7 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
     
-    GUARD_APPEND(_base_schema(&linebuf, 1, level, PROXY_EVENT));
+    GUARD_APPEND(_base_schema(&linebuf, 0, level, PROXY_EVENT));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " subevent", subevent,
                                     strlen(subevent)));
@@ -492,7 +504,7 @@ void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
     
-    GUARD_APPEND(_base_schema(&linebuf, 1, level, HANDSHAKE_EVENT));
+    GUARD_APPEND(_base_schema(&linebuf, 0, level, HANDSHAKE_EVENT));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " subevent", "handshake",
                                     sizeof("handshake")-1));
@@ -612,7 +624,7 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
 }
 
 int _linebuf_append_ossl(linebuf_t *linebuf) {
-    ERR_print_errors_cb(_linebuf_append_cb, &linebuf);
+    ERR_print_errors_cb(_linebuf_append_cb, linebuf);
     return 0;
 }
 
@@ -708,8 +720,9 @@ void _write_linebuf(logger_t *logger, linebuf_t *line) {
 }
 
 void _log_system_err(linebuf_t *linebuf, loglevel_t level,
-                     const char *msg, int errtype) {
-    GUARD_APPEND(_base_schema(linebuf, 1, level, ERR_EVENT));
+                     const char *msg, int errtype,
+                     int is_master) {
+    GUARD_APPEND(_base_schema(linebuf, is_master, level, ERR_EVENT));
 
     GUARD_APPEND(_linebuf_append_kv(linebuf, " error_msg", msg,
                                     strlen(msg)));
@@ -733,8 +746,8 @@ void _log_system_err(linebuf_t *linebuf, loglevel_t level,
 
 
 void _log_signal(linebuf_t *linebuf, loglevel_t level,
-                 struct signalfd_siginfo *si) {
-    GUARD_APPEND(_base_schema(linebuf, 1, level, SIGNAL_EVENT));
+                 struct signalfd_siginfo *si, int is_master) {
+    GUARD_APPEND(_base_schema(linebuf, is_master, level, SIGNAL_EVENT));
 
     static char signum[6];
     snprintf(signum, sizeof(signum), "%d", si->ssi_signo);
