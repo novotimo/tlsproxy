@@ -518,7 +518,7 @@ tpx_err_t proxy_handle_ssl_failure(proxy_t *proxy, int retcode) {
             log_handshake(LL_DEBUG, proxy, "denied");
         }
         
-        log_proxy(LL_ERROR, proxy, "client_disconnect",
+        log_proxy(LL_DEBUG, proxy, "client_disconnect",
                   "EOF received", NULL);
         return TPX_CLOSED;
     default:
