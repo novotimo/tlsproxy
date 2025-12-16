@@ -37,11 +37,13 @@
 
 
 void usage(const char *prog);
-void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd, int sigfd);
+void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs, int efd,
+                int sigfd);
 void parent_loop(tpx_config_t **tpx_config, pid_t **pids,
                  int *logfd, int sigfd, int efd);
 tpx_config_t *load_config(const char *conf_file);
-listen_t **start_listeners(tpx_config_t *config, int epollfd, size_t *ret_len);
+listen_t **start_listeners(tpx_config_t *config, int epollfd, size_t *ret_len,
+                           SSL_CTX **ssl_ctxs);
 void close_listeners(int epollfd, listen_t **listeners, size_t len);
 void free_listeners(listen_t **listeners, size_t len);
 static inline uint64_t del_tag(void *ptr);
@@ -50,10 +52,10 @@ void block_signals(sigset_t *mask, int logfd);
 void init_shmem(tpx_config_t *config);
 int init_logger(tpx_config_t *config);
 
-SSL_CTX *init_openssl(tpx_config_t *config, int logfd);
-int load_servcert(tpx_config_t *config, SSL_CTX *ctx, int logfd);
-int load_cacerts(tpx_config_t *config, SSL_CTX *ctx, int logfd);
-int load_servkey(tpx_config_t *config, SSL_CTX *ctx, int logfd);
+SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd);
+int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
+int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
+int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
 
 int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids);
 
@@ -196,17 +198,22 @@ int main(int argc, char *argv[]) {
     pid_t *pids = calloc(tpx_config->nworkers, sizeof(pid_t));
     if (!pids)
         _fatal(logfd, "Couldn't allocate PID list", TPX_ERR_ERRNO);
-    
-    // Try with this outside for now
-    SSL_CTX *ssl_ctx; 
+
+    // We need to save this here so that we can free the right amount
+    // of SSL_CTXs after reload
+    int nlisteners = tpx_config->listeners_count;
+    SSL_CTX **ssl_ctxs;
     for (;;) {
         // When respawning:
         // - respawn is set to 1
         // - Pids are already there
         // - Dead pids are set to -1
-        // - ssl_ctx is already there
-        if (!respawn)
-            ssl_ctx = init_openssl(tpx_config, logfd);
+        // - ssl_ctxs are already there
+        if (!respawn) {
+            ssl_ctxs = calloc(nlisteners, sizeof(SSL_CTX *));
+            for (int i=0; i<nlisteners; ++i)
+                ssl_ctxs[i] = init_openssl(&tpx_config->listeners[i], logfd);
+        }
         respawn = 0;
         
         for (int i=0; i<tpx_config->nworkers; ++i) {
@@ -220,7 +227,7 @@ int main(int argc, char *argv[]) {
             case 0:
                 free(pids);
                 sprintf(argv[0], "tlsproxy: worker");
-                child_loop(tpx_config, ssl_ctx, efd, sfd);
+                child_loop(tpx_config, ssl_ctxs, efd, sfd);
                 exit(EXIT_SUCCESS);
             default:
                 pids[i] = pid;
@@ -228,8 +235,15 @@ int main(int argc, char *argv[]) {
             }
         }
         parent_loop(&tpx_config, &pids, &logfd, sfd, efd);
-        if (!respawn)
-            SSL_CTX_free(ssl_ctx);
+
+        // From here on out the config could have been reloaded
+        if (!respawn) {
+            for (int i=0; i<nlisteners; ++i) {
+                SSL_CTX_free(ssl_ctxs[i]);
+            }
+            free(ssl_ctxs);
+            nlisteners = tpx_config->listeners_count;
+        }
     }
 
     return(EXIT_SUCCESS);
@@ -291,9 +305,15 @@ void parent_loop(tpx_config_t **config_,
                     if (si.ssi_signo == SIGCHLD) {
                         // Don't want to leave any zombies
                         pid_t pid = -1;
-                        while ((pid = waitpid(-1, NULL, WNOHANG)) > 0) {
-                            // TODO: get exit codes of dead children to log them
-                            log_worker(logfd, LL_WARN, 0, pid);
+                        int wstatus = 0;
+                        while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
+                            log_worker(logfd, LL_WARN, 0, pid /*, WEXITSTATUS(wstatus) */);
+
+                            if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 77) {
+                                for (int i=0; i<config->nworkers; ++i)
+                                    kill(pids[i], SIGKILL);
+                                exit(77);
+                            }
                             
                             int found=0;
                             for (int i=0; i<config->nworkers; ++i) {
@@ -340,13 +360,15 @@ cleanup:
     close(epollfd);
 }
 
-void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd, int sigfd) {
+void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs, int efd,
+                int sigfd) {
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
         _child_fatal("Couldn't create epoll in worker", TPX_ERR_ERRNO);
 
     size_t nlisteners;
-    listen_t **listeners = start_listeners(tpx_config, epollfd, &nlisteners);
+    listen_t **listeners = start_listeners(tpx_config, epollfd, &nlisteners,
+                                           ssl_ctxs);
 
     struct epoll_event ev, events[TPX_MAX_EVENTS];
 
@@ -365,7 +387,10 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd, int sigfd) 
     
     for (;;) {
         if (in_shutdown && nproxies == 0) {
-            SSL_CTX_free(ssl_ctx);
+            for (int i=0; i<tpx_config->listeners_count; ++i)
+                SSL_CTX_free(ssl_ctxs[i]);
+            free(ssl_ctxs);
+            
             close(epollfd);
             close(sigfd);
             closed_cleanup(&closed_set);
@@ -421,8 +446,7 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX *ssl_ctx, int efd, int sigfd) 
                 continue;
             
             tpx_err_t ev_ret = dispatch_events(events[n].data.ptr, epollfd,
-                                               events[n].events, ssl_ctx,
-                                               tpx_config->connect_timeout);
+                                               events[n].events);
             if (ev_ret == TPX_CLOSED) {
                 it = closed_insert(&closed_set, del_tag(events[n].data.ptr));
                 if (closed_is_end(it))
@@ -452,20 +476,21 @@ tpx_config_t *load_config(const char *config_file) {
 }
 
 /** @brief Start the listener sockets (only one for now) */
-listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len) {
-    listen_t **listeners = calloc(1, sizeof(listen_t *));
-    listen_t *listener = create_listener(tpx_config->listen_ip,
-                                         tpx_config->listen_port,
-                                         tpx_config->target_ip,
-                                         tpx_config->target_port);
-    listeners[0] = listener;
-    *len = 1;
+listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len,
+                           SSL_CTX **ssl_ctxs) {
+    *len = tpx_config->listeners_count;
+    listen_t **listeners = calloc(*len, sizeof(listen_t *));
+    for (int i=0; i < *len; ++i) {
+        const tpx_listen_conf_t *lconf = &tpx_config->listeners[i];
+        listeners[i] = create_listener(lconf, ssl_ctxs[i]);
+        
+        struct epoll_event ev;
+        ev.events = EPOLLIN;
+        ev.data.ptr = listeners[i];
+        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listeners[i]->fd, &ev) == -1)
+            _child_fatal("Couldn't add listen socket to epoll", TPX_ERR_ERRNO);
+    }
     
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.ptr = listener;
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listener->fd, &ev) == -1)
-        _child_fatal("Couldn't add listen socket to epoll", TPX_ERR_ERRNO);
     return listeners;
 }
 
@@ -482,7 +507,7 @@ void free_listeners(listen_t **listeners, size_t len) {
 }
 
 /** @brief Inits SSL_CTX for use as a TLS server, loading certs */
-SSL_CTX *init_openssl(tpx_config_t *config, int logfd) {
+SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (ctx == NULL) {
         _fatal(logfd, "Couldn't create OpenSSL context", TPX_ERR_OSSL);
@@ -543,7 +568,7 @@ SSL_CTX *init_openssl(tpx_config_t *config, int logfd) {
 }
 
 /** @brief Load the server certificate into the SSL_CTX */
-int load_servcert(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
+int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     BIO *leaf_bio = BIO_new_file(config->servcert, "r");
     X509 *leaf = NULL;
     if (!PEM_read_bio_X509(leaf_bio, &leaf, NULL, NULL)) {
@@ -563,7 +588,7 @@ int load_servcert(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
 }
 
 /** @brief Load the CA certificates into the SSL_CTX */
-int load_cacerts(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
+int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     X509_STORE *store = X509_STORE_new();
     X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
     for (int i=0; i<config->cacerts_count; ++i) {
@@ -584,7 +609,7 @@ int load_cacerts(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
 }
 
 /** @brief Load the server private key into the SSL_CTX */
-int load_servkey(tpx_config_t *config, SSL_CTX *ctx, int logfd) {
+int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     BIO *pkey_bio = BIO_new_file(config->servkey, "r");
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(pkey_bio, NULL, NULL,
                                              (void *)config->servkeypass);
@@ -617,32 +642,34 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     // This could be done better, I imagine. Make sure to watch config.c for
     // changes to the logic in tpx_validate_conf
-    if (!(*config)->cert_chain && !(*config)->cacerts) {
-        log_system_err_m_ex(
-            *logfd, LL_ERROR, "Couldn't reload config",
-            "Either 'cert-chain' or 'cacerts' must be provided");
-        goto cleanup_conf;
-    } else if ((*config)->cert_chain &&
-               ((*config)->cacerts || (*config)->servcert)) {
-        log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                            "'cert-chain' can't be used together with 'cacerts'"
-                            " or 'servcert'");
-        goto cleanup_conf;
-    } else if ((*config)->cacerts && !(*config)->servcert) {
-        log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                            "'servcert' must be specified if 'cacerts' is"
-            );
-        goto cleanup_conf;
-    } else if ((*config)->listen_port > UINT16_MAX) {
-        log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                            "'listen-port' must be a valid port");
-        goto cleanup_conf;
-    } else if ((*config)->target_port > UINT16_MAX) {
-        log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                            "'target-port' must be a valid port");
-        goto cleanup_conf;
+    for (int i=0; i<new_config->listeners_count; ++i) {
+        const tpx_listen_conf_t *listen_conf = &new_config->listeners[i];
+        if (!listen_conf->cert_chain && !listen_conf->cacerts) {
+            log_system_err_m_ex(
+                *logfd, LL_ERROR, "Couldn't reload config",
+                "Either 'cert-chain' or 'cacerts' must be provided");
+            goto cleanup_conf;
+        } else if (listen_conf->cert_chain &&
+                   (listen_conf->cacerts || listen_conf->servcert)) {
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                                "'cert-chain' can't be used together with 'cacerts'"
+                                " or 'servcert'");
+            goto cleanup_conf;
+        } else if (listen_conf->cacerts && !listen_conf->servcert) {
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                                "'servcert' must be specified if 'cacerts' is"
+                );
+            goto cleanup_conf;
+        } else if (listen_conf->listen_port > UINT16_MAX) {
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                                "'listen-port' must be a valid port");
+            goto cleanup_conf;
+        } else if (listen_conf->target_port > UINT16_MAX) {
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                                "'target-port' must be a valid port");
+            goto cleanup_conf;
+        }
     }
-
 
     uint8_t old_enabled = g_shmem->logger.enabled;
     uint8_t old_loglevel = g_shmem->logger.loglevel;
@@ -663,15 +690,17 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
     }
 
 
-    // We don't actually use this here, it's just to make sure the ctx
-    // will properly build.
-    SSL_CTX *ssl_ctx = init_openssl(new_config, new_logfd);
-    if (!ssl_ctx) {
-        log_system_err_m(*logfd, LL_ERROR, "Couldn't reload config",
-                         TPX_ERR_OSSL);
-        goto restore_shmem;
+    for (int i=0; i<new_config->listeners_count; ++i) {
+        // We don't actually use this context we've made, we just want to
+        // prove that it will be made without errors
+        SSL_CTX *ssl_ctx = init_openssl(&new_config->listeners[i], new_logfd);
+        if (!ssl_ctx) {
+            log_system_err_m(*logfd, LL_ERROR, "Couldn't reload config",
+                             TPX_ERR_OSSL);
+            goto restore_shmem;
+        }
+        SSL_CTX_free(ssl_ctx);
     }
-    SSL_CTX_free(ssl_ctx);
 
     // Now we're fully convinced our new config is good
     int old_workers = (*config)->nworkers;

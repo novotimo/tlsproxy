@@ -208,13 +208,13 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
 }
 
 tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
-                       void *ssl_ctx, uint8_t tag, unsigned int conn_timeout) {
+                       uint8_t tag) {
     tpx_err_t ret = TPX_SUCCESS;
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
     case PS_SERVER_CONNECTING:
         if (0 == (tag & 1)) {
-            ret = proxy_handle_connect(proxy, conn_timeout);
+            ret = proxy_handle_connect(proxy, 0);
             if (ret == TPX_AGAIN)
                 proxy->state = PS_SERVER_CONNECTING;
             else if (ret == TPX_SUCCESS)

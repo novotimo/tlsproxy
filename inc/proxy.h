@@ -100,7 +100,7 @@ typedef struct proxy_s {
  *         or TPX_CLOSED (which indicates that the proxy_t is freed).
  */
 tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
-                       void *ssl_ctx, uint8_t tag, unsigned int conn_timeout);
+                       uint8_t tag);
 /**
  * @brief Create a proxy, put a connect socket in, and wait for connect.
  * @param accepted_fd The fd that we just received from a call to accept().

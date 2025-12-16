@@ -1,16 +1,21 @@
 #ifndef __TLSPROXY_LISTEN_H
 #define __TLSPROXY_LISTEN_H
 
+#include <openssl/ssl.h>
 #include <stdint.h>
 #include <sys/socket.h>
 
 #include "errors.h"
 
+typedef struct tpx_listen_conf_s tpx_listen_conf_t;
 
 /** @brief Holds the context for a listen socket */
 typedef struct listen_s {
     uint8_t event_id; /**< @brief EV_LISTEN */
     int fd; /**< @brief The listening socket */
+
+    const tpx_listen_conf_t *config;
+    SSL_CTX *ssl_ctx;
 
     struct sockaddr_storage listen_addr;
     socklen_t listen_addrlen;
@@ -33,8 +38,7 @@ typedef struct listen_s {
  *                chain and also be otherwise initialized.
  * @return The outcome of handling the event, either TPX_SUCCESS or TPX_FAILURE.
  */
-tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
-                        void *ssl_ctx, unsigned int conn_timeout);
+tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events);
 
 /**
  * @brief Makes a connection ctx for a listen socket.
@@ -50,8 +54,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
  * @param tport The port of the backend server.
  * @return The connection context created or NULL if it failed.
  */
-listen_t *create_listener(const char *lhost, const unsigned short lport,
-                          const char *thost, const unsigned short tport);
+listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx);
 
 /**
  * @brief Creates a socket and binds to it

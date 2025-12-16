@@ -9,12 +9,8 @@
 #define TPX_ENUM_MISSING -1
 
 
-/** @brief The configuration of the TLS Proxy */
-typedef struct tpx_config_s {
-    unsigned int nworkers; /**< @brief The number of worker processes. */
-    const char *logfile; /**< @brief The file to write logs into. */
-    loglevel_t *loglevel; /**< @brief Don't print messages higher than this log
-                          * level. */
+typedef struct tpx_listen_conf_s {
+    const char *name; /**< @brief The name of the listener */
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
     unsigned int connect_timeout; /**< @brief The timeout for connecting to
@@ -36,11 +32,63 @@ typedef struct tpx_config_s {
                           */
     const char *servkeypass; /**< @brief The encryption password for the server
                               * key */
+} tpx_listen_conf_t;
+
+/** @brief The configuration of the TLS Proxy */
+typedef struct tpx_config_s {
+    unsigned int nworkers; /**< @brief The number of worker processes. */
+    const char *logfile; /**< @brief The file to write logs into. */
+    loglevel_t *loglevel; /**< @brief Don't print messages higher than this log
+                          * level. */
+    const tpx_listen_conf_t *listeners;
+    unsigned int listeners_count;
 } tpx_config_t;
 
 
 static const cyaml_schema_value_t cacert_entry = {
     CYAML_VALUE_STRING(CYAML_FLAG_POINTER, char, 0, CYAML_UNLIMITED),
+};
+
+static const cyaml_schema_field_t listener_fields_schema[] = {
+    CYAML_FIELD_STRING_PTR(
+        "name", CYAML_FLAG_POINTER, tpx_listen_conf_t, name,
+        0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR(
+        "target-ip", CYAML_FLAG_POINTER, tpx_listen_conf_t, target_ip,
+        0, CYAML_UNLIMITED),
+    CYAML_FIELD_UINT(
+        "target-port", CYAML_FLAG_DEFAULT, tpx_listen_conf_t, target_port),
+    CYAML_FIELD_UINT(
+        "connect-timeout", CYAML_FLAG_DEFAULT, tpx_listen_conf_t,
+        connect_timeout),
+    
+    CYAML_FIELD_STRING_PTR(
+        "listen-ip", CYAML_FLAG_POINTER, tpx_listen_conf_t, listen_ip,
+        0, CYAML_UNLIMITED),
+    CYAML_FIELD_UINT(
+        "listen-port", CYAML_FLAG_DEFAULT, tpx_listen_conf_t, listen_port),
+
+    CYAML_FIELD_SEQUENCE_COUNT(
+        "cacerts", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_listen_conf_t,
+        cacerts, cacerts_count, &cacert_entry, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR(
+        "cert-chain", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, cert_chain, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR(
+        "servcert", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_listen_conf_t,
+        servcert, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR(
+        "servkey", CYAML_FLAG_POINTER, tpx_listen_conf_t, servkey,
+        0, CYAML_UNLIMITED),
+    CYAML_FIELD_STRING_PTR(
+        "servkeypass", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, servkeypass, 0, CYAML_UNLIMITED),
+    CYAML_FIELD_END
+};
+
+static const cyaml_schema_value_t listener_schema = {
+    CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, tpx_listen_conf_t,
+                        listener_fields_schema),
 };
 
 static const cyaml_strval_t loglevel_strings[] = {
@@ -74,36 +122,11 @@ static const cyaml_schema_field_t top_mapping_schema[] = {
     CYAML_FIELD_ENUM_PTR(
         "loglevel", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
         loglevel, loglevel_strings, CYAML_ARRAY_LEN(loglevel_strings)),
-    
-    CYAML_FIELD_STRING_PTR(
-        "target-ip", CYAML_FLAG_POINTER, tpx_config_t, target_ip,
-        0, CYAML_UNLIMITED),
-    CYAML_FIELD_UINT(
-        "target-port", CYAML_FLAG_DEFAULT, tpx_config_t, target_port),
-    CYAML_FIELD_UINT(
-        "connect-timeout", CYAML_FLAG_DEFAULT, tpx_config_t, connect_timeout),
-    
-    CYAML_FIELD_STRING_PTR(
-        "listen-ip", CYAML_FLAG_POINTER, tpx_config_t, listen_ip,
-        0, CYAML_UNLIMITED),
-    CYAML_FIELD_UINT(
-        "listen-port", CYAML_FLAG_DEFAULT, tpx_config_t, listen_port),
 
     CYAML_FIELD_SEQUENCE_COUNT(
-        "cacerts", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
-        cacerts, cacerts_count, &cacert_entry, 0, CYAML_UNLIMITED),
-    CYAML_FIELD_STRING_PTR(
-        "cert-chain", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
-        cert_chain, 0, CYAML_UNLIMITED),
-    CYAML_FIELD_STRING_PTR(
-        "servcert", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t, servcert,
-        0, CYAML_UNLIMITED),
-    CYAML_FIELD_STRING_PTR(
-        "servkey", CYAML_FLAG_POINTER, tpx_config_t, servkey,
-        0, CYAML_UNLIMITED),
-    CYAML_FIELD_STRING_PTR(
-        "servkeypass", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, tpx_config_t,
-        servkeypass, 0, CYAML_UNLIMITED),
+        "listeners", CYAML_FLAG_POINTER, tpx_config_t, listeners,
+        listeners_count, &listener_schema, 0, CYAML_UNLIMITED),
+    
     CYAML_FIELD_END
 };
 
@@ -118,6 +141,7 @@ static const cyaml_schema_value_t top_schema = {
  * @param config The configuration object
  * @return Returns TPX_FAILURE on failure and TPX_SUCCESS on success.
  */
-int tpx_validate_conf(tpx_config_t *config);
+int tpx_validate_conf_l(const tpx_listen_conf_t *config);
+int tpx_validate_conf(const tpx_config_t *config);
 
 #endif

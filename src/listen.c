@@ -11,13 +11,13 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 
+#include "config.h"
 #include "errors.h"
 #include "event.h"
 #include "proxy.h"
 
 
-tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
-                        void *ssl_ctx, unsigned int conn_timeout) {
+tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events) {
     assert(listen->event_id == EV_LISTEN);
     
     struct sockaddr_storage addr;
@@ -39,7 +39,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
         return TPX_FAILURE;
     }
 
-    SSL *ssl = SSL_new((SSL_CTX *)ssl_ctx);
+    SSL *ssl = SSL_new((SSL_CTX *)listen->ssl_ctx);
     if (ssl == NULL) {
         ERR_print_errors_fp(stderr);
         fprintf(stderr, "handle_accept: SSL_new: Couldn't create SSL ctx\n");
@@ -58,7 +58,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
     // Programmer beware: Make 100% sure that addr gets copied into the proxy
     // ctx rather than just its pointer.
     proxy_t *proxy = create_proxy(conn_sock, ssl,
-                                  listen, conn_timeout);
+                                  listen, listen->config->connect_timeout);
     if (!proxy) {
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");
@@ -69,26 +69,28 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events,
     if (retval == TPX_FAILURE) {
         // Need to call with epollfd=-1 to show that the sockets aren't in epoll
         proxy_close(proxy, -1);
-        fprintf(stderr, "handle_accept: Couldn't add sockets to epoll, not making proxy\n");
+        fprintf(stderr, "handle_accept: Couldn't add sockets to epoll, not "
+                "making proxy\n");
         return TPX_FAILURE;
     }
     return retval;
 }
 
-listen_t *create_listener(const char *lhost, const unsigned short lport,
-                          const char *thost, const unsigned short tport) {
+listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
     listen_t *l = malloc(sizeof(listen_t));
     if (!l)
         err(EXIT_FAILURE, "create_listener: malloc");
     
-    int lsock = bind_listen_sock(l, lhost, lport);
+    int lsock = bind_listen_sock(l, config->listen_ip, config->listen_port);
     
     if (listen(lsock, SOMAXCONN) < 0)
         err(EXIT_FAILURE, "create_listener: listen");
 
     l->event_id = EV_LISTEN;
     l->fd = lsock;
-    tpx_err_t ret = get_conn(thost, tport,
+    l->config = config;
+    l->ssl_ctx = ctx;
+    tpx_err_t ret = get_conn(config->target_ip, config->target_port,
                              (struct sockaddr *)&l->peer_addr,
                              &l->peer_addrlen);
     if (ret == TPX_FAILURE) {
@@ -146,7 +148,7 @@ int bind_listen_sock(listen_t *l, const char *host,
     }
     if (lp == NULL || fd == -1) {
         freeaddrinfo(listen_addr);
-        errx(EXIT_FAILURE, "Couldn't bind on any addresses");
+        errx(77, "Couldn't bind on any addresses");
     }
 
     memcpy(&l->listen_addr, lp->ai_addr, lp->ai_addrlen);

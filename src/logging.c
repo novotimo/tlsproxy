@@ -236,32 +236,6 @@ void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config) {
     GUARD_APPEND(_linebuf_append(&linebuf, nworkers, strlen(nworkers),
                                  TPX_MODE_NONE));
 
-    if (config->cert_chain) {
-        GUARD_APPEND(_linebuf_append_kv(&linebuf, " cert_chain",
-                                        config->cert_chain,
-                                        strlen(config->cert_chain)));
-    } else {
-        GUARD_APPEND(_linebuf_append(&linebuf, " cacerts=\"",
-                                     sizeof(" cacerts=\"")-1,
-                                     TPX_MODE_NONE));
-        for (int i=0; i < config->cacerts_count; ++i) {
-            GUARD_APPEND(_linebuf_append(&linebuf, config->cacerts[i],
-                                         strlen(config->cacerts[i]),
-                                         TPX_MODE_SANITIZE));
-            if (i+1 < config->cacerts_count)
-                GUARD_APPEND(_linebuf_putc(&linebuf, ':'));
-        }
-        GUARD_APPEND(_linebuf_putc(&linebuf, '"'));
-        
-        GUARD_APPEND(_linebuf_append_kv(&linebuf, " servcert",
-                                        config->servcert,
-                                        strlen(config->servcert)));
-    }
-
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " servkey",
-                                    config->servkey,
-                                    strlen(config->servkey)));
-
     _write_linebuf_fd(logfd, &linebuf);
 }
 
@@ -496,8 +470,65 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
     _write_linebuf(logger, &linebuf);
 }
 
+void log_listener_listen(loglevel_t level, listen_t *listener) {
+    logger_t *logger = &g_shmem->logger;
+    if (!logger->enabled || logger->loglevel < level)
+        return;
+    
+    static linebuf_t linebuf;
+    linebuf.u.len = LINEBUF_OFFSET;
+    const tpx_listen_conf_t *config = listener->config;
+    
+    GUARD_APPEND(_base_schema(&linebuf, 1, level, CONFIG_LOAD_EVENT));
+
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " target_ip",
+                                    config->target_ip,
+                                    strlen(config->target_ip)));
+
+    char port[12];
+    snprintf(port, sizeof(port), "%hu", config->target_port);
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " target_port",
+                                    port, strlen(port)));
+
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_ip",
+                                    config->target_ip,
+                                    strlen(config->target_ip)));
+
+    snprintf(port, sizeof(port), "%hu", config->listen_port);
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_port",
+                                    port, strlen(port)));
+    
+    if (config->cert_chain) {
+        GUARD_APPEND(_linebuf_append_kv(&linebuf, " cert_chain",
+                                        config->cert_chain,
+                                        strlen(config->cert_chain)));
+    } else {
+        GUARD_APPEND(_linebuf_append(&linebuf, " cacerts=\"",
+                                     sizeof(" cacerts=\"")-1,
+                                     TPX_MODE_NONE));
+        for (int i=0; i < config->cacerts_count; ++i) {
+            GUARD_APPEND(_linebuf_append(&linebuf, config->cacerts[i],
+                                         strlen(config->cacerts[i]),
+                                         TPX_MODE_SANITIZE));
+            if (i+1 < config->cacerts_count)
+                GUARD_APPEND(_linebuf_putc(&linebuf, ':'));
+        }
+        GUARD_APPEND(_linebuf_putc(&linebuf, '"'));
+        
+        GUARD_APPEND(_linebuf_append_kv(&linebuf, " servcert",
+                                        config->servcert,
+                                        strlen(config->servcert)));
+    }
+
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " servkey",
+                                    config->servkey,
+                                    strlen(config->servkey)));
+
+    _write_linebuf(logger, &linebuf);
+}
+
 void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome) {
-        logger_t *logger = &g_shmem->logger;
+    logger_t *logger = &g_shmem->logger;
     if (!logger->enabled || logger->loglevel < level)
         return;
     
