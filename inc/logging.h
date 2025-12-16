@@ -25,6 +25,7 @@
 #define STARTUP_EVENT "startup"
 #define WORKER_EVENT "worker"
 #define CONFIG_LOAD_EVENT "config_loaded"
+#define LISTEN_EVENT "listen"
 #define CERT_LOAD_EVENT "cert_loaded"
 #define ERR_EVENT "system_error"
 #define SIGNAL_EVENT "signal_received"
@@ -61,6 +62,7 @@ typedef struct logger_s {
 typedef struct tpx_config_s tpx_config_t;
 struct signalfd_siginfo;
 typedef struct proxy_s proxy_t;
+typedef struct listen_s listen_t;
 
 
 // For master process
@@ -69,7 +71,7 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
 // Message schemas (Master). _m refers to master versions of functions
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]);
 void log_worker(int logfd, loglevel_t level, int worker_state,
-                pid_t worker_pid);
+                pid_t worker_pid, int wstatus);
 void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config);
 void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client);
 void log_system_err_m(int logfd, loglevel_t level, const char *msg,
@@ -84,6 +86,7 @@ void log_signal(loglevel_t level, struct signalfd_siginfo *si);
 // If desc is null it get the OpenSSL error queue instead
 void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
                const char *msg, const char *desc);
+void log_listen(loglevel_t level, listen_t *listener);
 void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome);
 
 

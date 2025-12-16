@@ -231,7 +231,7 @@ int main(int argc, char *argv[]) {
                 exit(EXIT_SUCCESS);
             default:
                 pids[i] = pid;
-                log_worker(logfd, LL_WARN, TPX_WORKER_ALIVE, pid);
+                log_worker(logfd, LL_WARN, TPX_WORKER_ALIVE, pid, -1);
             }
         }
         parent_loop(&tpx_config, &pids, &logfd, sfd, efd);
@@ -307,7 +307,7 @@ void parent_loop(tpx_config_t **config_,
                         pid_t pid = -1;
                         int wstatus = 0;
                         while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
-                            log_worker(logfd, LL_WARN, 0, pid /*, WEXITSTATUS(wstatus) */);
+                            log_worker(logfd, LL_WARN, 0, pid, wstatus);
 
                             if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 77) {
                                 for (int i=0; i<config->nworkers; ++i)
@@ -488,6 +488,8 @@ listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len,
         ev.data.ptr = listeners[i];
         if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listeners[i]->fd, &ev) == -1)
             _child_fatal("Couldn't add listen socket to epoll", TPX_ERR_ERRNO);
+
+        log_listen(LL_INFO, listeners[i]);
     }
     
     return listeners;

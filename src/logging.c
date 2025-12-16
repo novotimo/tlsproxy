@@ -204,7 +204,7 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
 }
 
 void log_worker(int logfd, loglevel_t level, int worker_state,
-                        pid_t worker_pid) {
+                pid_t worker_pid, int wstatus) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -217,9 +217,30 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_state",
                                     state, strlen(state)));
     
-    static char id[12];
-    assert(snprintf(id, sizeof(id), "%d", worker_pid) < sizeof(id));
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_pid", id, strlen(id)));
+    static char intstr[12];
+    assert(snprintf(intstr, sizeof(intstr), "%d", worker_pid) < sizeof(intstr));
+    GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_pid", intstr,
+                                    strlen(intstr)));
+
+    if (wstatus != -1 && WIFSIGNALED(wstatus)) {
+        assert(snprintf(intstr, sizeof(intstr), "%d", WTERMSIG(wstatus))
+               < sizeof(intstr));
+        
+        GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "signal",
+                                        sizeof("signal")-1));
+        
+        GUARD_APPEND(_linebuf_append_kv(&linebuf, " code", intstr,
+                                        strlen(intstr)));
+    } else if (wstatus != -1 && WIFEXITED(wstatus)) {
+        assert(snprintf(intstr, sizeof(intstr), "%d", WEXITSTATUS(wstatus))
+               < sizeof(intstr));
+        
+        GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "exited",
+                                        sizeof("signal")-1));
+        
+        GUARD_APPEND(_linebuf_append_kv(&linebuf, " code", intstr,
+                                        strlen(intstr)));
+    }
 
     _write_linebuf_fd(logfd, &linebuf);
 }
@@ -470,7 +491,7 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
     _write_linebuf(logger, &linebuf);
 }
 
-void log_listener_listen(loglevel_t level, listen_t *listener) {
+void log_listen(loglevel_t level, listen_t *listener) {
     logger_t *logger = &g_shmem->logger;
     if (!logger->enabled || logger->loglevel < level)
         return;
@@ -479,7 +500,7 @@ void log_listener_listen(loglevel_t level, listen_t *listener) {
     linebuf.u.len = LINEBUF_OFFSET;
     const tpx_listen_conf_t *config = listener->config;
     
-    GUARD_APPEND(_base_schema(&linebuf, 1, level, CONFIG_LOAD_EVENT));
+    GUARD_APPEND(_base_schema(&linebuf, 1, level, LISTEN_EVENT));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " target_ip",
                                     config->target_ip,
