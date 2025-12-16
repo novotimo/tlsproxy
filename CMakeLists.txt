@@ -3,10 +3,6 @@ cmake_minimum_required(VERSION 3.23)
 project(TLSProxy VERSION 0.9.0 LANGUAGES C)
 
 if (UNIT_TESTING)
-  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
-  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/coverage)
-
-  include(CodeCoverage)
   add_compile_definitions(UNIT_TESTING)
   add_compile_options(-O0)
 endif()
@@ -25,12 +21,8 @@ configure_file(
 
 find_package(OpenSSL REQUIRED)
 
-# CYaml
-add_library(cyaml SHARED IMPORTED)
-set_target_properties(cyaml PROPERTIES
-  IMPORTED_LOCATION "/usr/local/lib/libcyaml.so"
-  INTERFACE_INCLUDE_DIRECTORIES "/usr/local/include"
-)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CYAML REQUIRED libcyaml)
 
 add_library(proxy)
 target_include_directories(proxy PRIVATE inc external)
@@ -58,11 +50,11 @@ target_include_directories(tlsproxy PRIVATE inc external)
 set_property(TARGET tlsproxy PROPERTY C_STANDARD 99)
 
 if (UNIT_TESTING)
+  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
   # This is actually 2.0.0 but they forgot to version bump
-  find_package(cmocka 1.9.0 REQUIRED)
+  find_package(cmocka REQUIRED)
   include(AddCMockaTest)
   add_subdirectory(test)
-  append_coverage_compiler_flags()
 elseif (BUILD_DOC)
   # Doxygen
   find_package(Doxygen

@@ -32,24 +32,14 @@ foreach(i RANGE ${count})
     add_cmocka_test(
       ${test_name}
       SOURCES ${test_name}.c
-      COMPILE_OPTIONS --coverage
-      LINK_LIBRARIES "${TEST_LIBS}" --coverage)
+      LINK_LIBRARIES "${TEST_LIBS}")
   ELSE()
     add_cmocka_test(
       ${test_name}
       SOURCES ${test_name}.c
-      COMPILE_OPTIONS --coverage
-      LINK_LIBRARIES "${TEST_LIBS}" --coverage "${flags}")
+      LINK_LIBRARIES "${TEST_LIBS}" "${flags}")
   ENDIF()    
   add_cmocka_test_environment(${test_name})
   target_include_directories(${test_name} PUBLIC "${TEST_INC}")
 endforeach()
 add_custom_target(build_tests DEPENDS ${TEST_TARGETS})
-
-setup_target_for_coverage_lcov(
-    NAME test_coverage
-    EXECUTABLE ctest
-    EXCLUDE app inc test external
-    LCOV_ARGS --ignore-errors unused
-    DEPENDENCIES proxy
-)
