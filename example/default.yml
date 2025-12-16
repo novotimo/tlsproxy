@@ -5,37 +5,55 @@ logfile: tlsproxy.log
 ## Log levels are: FATAL ERROR WARN INFO DEBUG
 loglevel: DEBUG
 
-## Connection details of the backend server
-target-ip: 127.0.0.1
-#target-ip: 10.255.255.1
-target-port: 8080
+listeners:
+  - name: https
+    ## Connection details of the backend server
+    target-ip: 127.0.0.1
+    target-port: 8080
 
-## If we can't connect to the server by this time, drop the connection
-connect-timeout: 5000
+    ## If we can't connect to the server by this time, drop the connection
+    connect-timeout: 5000
 
-## The proxy will accept connections on <listen-ip>:<listen-port>
-## 0.0.0.0 means listen on every interface
-listen-ip: 0.0.0.0
-listen-port: 8443
+    ## The proxy will accept connections on <listen-ip>:<listen-port>
+    ## 0.0.0.0 means listen on every interface
+    listen-ip: 0.0.0.0
+    listen-port: 8443
 
-## The certificate chain offered to clients
-cacerts:
-- cacert.pem
-- intcert.pem
-servcert: servcert.pem
-servkey: servkey.pem
-#servkeypass: test
+    ## The certificate chain offered to clients
+    cacerts:
+      - cacert.pem
+      - intcert.pem
+    servcert: servcert.pem
+    servkey: servkey.pem
+    ## If the servkey is encrypted:
+    #servkeypass: test
 
-## Alternatively, provide all certs (including server cert) in a single file:
-# cert-chain: chain.pem
-# servkey: servkey.pem
-# servkeypass: test
-## cacerts and servcert can't be used together with cert-chain.
+  ## Basic load balancing
+  # - name: https2
+  #   target-ip: 127.0.0.1
+  #   target-port: 8081
 
-## If we implement mTLS:
-# trusted-certs:
-# - clientroot.pem
-## In this example, only the root is provided. If your client doesn't send the
-## chain certs, you will need to include the intermediate certs here.
-## Also, if the client cert is self-signed or you don't have its chain, just
-## put it in here.
+  #   connect-timeout: 6000
+
+  #   ## Note we're using the same IP/port combo for the listen socket
+  #   ## That's right, we get basic load balancing too!
+  #   listen-ip: 0.0.0.0
+  #   listen-port: 8443
+
+  #   ## The certificate chain offered to clients
+  #   cert-chain: chain.pem
+  #   servkey: servkey.pem
+
+  ## Pointing to another service
+  # - name: telnets
+  #   target-ip: 127.0.0.1
+  #   target-port: 23
+
+  #   connect-timeout: 2000
+
+  #   listen-ip: 0.0.0.0
+  #   listen-port: 42023
+
+  #   ## The certificate chain offered to clients
+  #   cert-chain: chain.pem
+  #   servkey: servkey.pem

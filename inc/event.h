@@ -1,6 +1,7 @@
 #ifndef __TLSPROXY_EVENT_H
 #define __TLSPROXY_EVENT_H
 
+#include <openssl/ssl.h>
 #include <stdint.h>
 
 #include "errors.h"
@@ -29,7 +30,6 @@ typedef struct event_s {
  * @return The outcome of handling the event, either TPX_SUCCESS, TPX_FAILURE,
  *         or TPX_CLOSED (which indicates that the event data is freed).
  */
-tpx_err_t dispatch_events(event_t *ev, int epollfd, uint32_t events,
-                          void *ssl_ctx, unsigned int conn_timeout);
+tpx_err_t dispatch_events(event_t *ev, int epollfd, uint32_t events);
 
 #endif
