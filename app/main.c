@@ -214,7 +214,6 @@ int main(int argc, char *argv[]) {
             for (int i=0; i<nlisteners; ++i)
                 ssl_ctxs[i] = init_openssl(&tpx_config->listeners[i], logfd);
         }
-        respawn = 0;
         
         for (int i=0; i<tpx_config->nworkers; ++i) {
             // If this isn't the worker needing a respawn
@@ -234,6 +233,8 @@ int main(int argc, char *argv[]) {
                 log_worker(logfd, LL_WARN, TPX_WORKER_ALIVE, pid, -1);
             }
         }
+        
+        respawn = 0;
         parent_loop(&tpx_config, &pids, &logfd, sfd, efd);
 
         // From here on out the config could have been reloaded
@@ -314,7 +315,7 @@ void parent_loop(tpx_config_t **config_,
                                     kill(pids[i], SIGKILL);
                                 exit(77);
                             }
-                            
+
                             for (int i=0; i<config->nworkers; ++i) {
                                 if (pids[i] == pid) {
                                     if (in_shutdown) {
@@ -328,7 +329,7 @@ void parent_loop(tpx_config_t **config_,
                                 }
                             }
                         }
-                        
+
                         continue;
                     } else if (si.ssi_signo == SIGHUP) {
                         if (handle_reload(config_, logfd_, pids_) == 1) {
