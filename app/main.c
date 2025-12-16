@@ -315,16 +315,15 @@ void parent_loop(tpx_config_t **config_,
                                 exit(77);
                             }
                             
-                            int found=0;
                             for (int i=0; i<config->nworkers; ++i) {
                                 if (pids[i] == pid) {
-                                    if (in_shutdown)
+                                    if (in_shutdown) {
                                         --left_to_close;
-                    
-                                    respawn = 1;
-                                    pids[i] = 0;
-                                    finishing = 1;
-                                    found = 1;
+                                    } else {
+                                        respawn = 1;
+                                        finishing = 1;
+                                    }
+                                    pids[i] = -1;
                                     break;
                                 }
                             }
