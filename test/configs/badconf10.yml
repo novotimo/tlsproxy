@@ -1,0 +1,10 @@
+# Missing certs
+
+nworkers: 1
+listeners:
+  - name: ""
+    target-ip: 127.0.0.1
+    target-port: 9999
+    listen-ip: 9999
+    servcert: SC
+    servkey: SK

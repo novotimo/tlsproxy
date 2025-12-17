@@ -8,56 +8,80 @@
 
 #include "errors.h"
 
+
+// Needed for libcyaml to work
+static const cyaml_config_t cyaml_config = {
+    .log_fn = cyaml_log,
+    .mem_fn = cyaml_mem,
+    .log_level = CYAML_LOG_WARNING,
+};
+
 // Empty config (means cacerts and cert chain are both null)
-static tpx_config_t badconf1;
+static tpx_config_t emptyconf;
 
-// Defining both cacerts and cert_chain
-const char *cacerts[] = {"a", "b"};
-static tpx_config_t badconf2 = {
-    .cacerts = cacerts,
-    .cacerts_count = sizeof(cacerts),
-    .cert_chain = "c",
-    .servcert = "d",
-    .servkey = "e"
-};
 
-// Defining certchain and also servcert
-static tpx_config_t badconf3 = {
-    .cert_chain = "a",
-    .servcert = "b",
-    .servkey = "c"
-};
+cyaml_err_t loadconf(tpx_config_t **config, const unsigned char *input,
+                      size_t len) {
+    return(cyaml_load_data(input, len, &cyaml_config, &top_schema,
+                           (cyaml_data_t **)config, NULL));
+}
 
-// Defining cacerts but not servcert
-static tpx_config_t badconf4 = {
-    .cacerts = cacerts,
-    .cacerts_count = sizeof(cacerts),
-};
+cyaml_err_t loadconf_f(tpx_config_t **config, const char *fname) {
+    return(cyaml_load_file(fname, &cyaml_config, &top_schema,
+                           (cyaml_data_t **)config, NULL));
+}
 
-// Using cacerts
-static tpx_config_t goodconf1 = {
-    .cacerts = cacerts,
-    .cacerts_count = sizeof(cacerts),
-    .servcert = "a",
-    .servkey = "b"
-};
+tpx_err_t vfy(const unsigned char *input, size_t len) {
+    tpx_config_t *config;
+    cyaml_err_t error = loadconf(&config, input, len);
+    
+    if (error != CYAML_OK) {
+        fprintf(stderr, "got cyaml error (%d): %s\n",
+                error, cyaml_strerror(error));
+        return TPX_FAILURE;
+    }
 
-// Using cert-chain
-static tpx_config_t goodconf2 = {
-    .cert_chain = "a",
-    .servkey = "b"
-};
+    tpx_err_t ret = tpx_validate_conf(config);
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)config, 0);
+    return ret;
+}
 
+tpx_err_t vfy_f(const char *fname) {
+    tpx_config_t *config;
+    cyaml_err_t error = loadconf_f(&config, fname);
+    
+    if (error != CYAML_OK) {
+        fprintf(stderr, "got cyaml error (%d): %s\n",
+                error, cyaml_strerror(error));
+        return TPX_FAILURE;
+    }
+
+    tpx_err_t ret = tpx_validate_conf(config);
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)config, 0);
+    return ret;
+}
 
 /* Make sure we properly test for the configuration rules */
 static void check_conf_validation(void **state) {
-    assert_int_equal(tpx_validate_conf(&badconf1),TPX_FAILURE);
-    assert_int_equal(tpx_validate_conf(&badconf2),TPX_FAILURE);
-    assert_int_equal(tpx_validate_conf(&badconf3),TPX_FAILURE);
-    assert_int_equal(tpx_validate_conf(&badconf4),TPX_FAILURE);
-    
-    assert_int_equal(tpx_validate_conf(&goodconf1),TPX_SUCCESS);
-    assert_int_equal(tpx_validate_conf(&goodconf2),TPX_SUCCESS);
+    assert_int_equal(tpx_validate_conf(&emptyconf),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf1.yml"),TPX_SUCCESS);
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf2.yml"),TPX_SUCCESS);
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf3.yml"),TPX_SUCCESS);
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf4.yml"),TPX_SUCCESS);
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf5.yml"),TPX_SUCCESS);
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf6.yml"),TPX_SUCCESS);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf1.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf2.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf3.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf4.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf5.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf6.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf7.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf8.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf9.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf10.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf11.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf12.yml"),TPX_FAILURE);
 }
 
 

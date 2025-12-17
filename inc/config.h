@@ -6,7 +6,7 @@
 #include "logging.h"
 
 
-#define TPX_ENUM_MISSING -1
+//#define TPX_ENUM_MISSING -1
 
 
 typedef struct tpx_listen_conf_s {
@@ -15,7 +15,6 @@ typedef struct tpx_listen_conf_s {
     unsigned int target_port; /**< @brief The port of the upstream service. */
     unsigned int connect_timeout; /**< @brief The timeout for connecting to
                                    * the backend in milliseconds */
-
 
     const char *listen_ip; /**< @brief The local IP address to listen on. */
     unsigned int listen_port; /**< @brief The port to listen on. */
@@ -59,8 +58,8 @@ static const cyaml_schema_field_t listener_fields_schema[] = {
     CYAML_FIELD_UINT(
         "target-port", CYAML_FLAG_DEFAULT, tpx_listen_conf_t, target_port),
     CYAML_FIELD_UINT(
-        "connect-timeout", CYAML_FLAG_DEFAULT, tpx_listen_conf_t,
-        connect_timeout),
+        "connect-timeout", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, connect_timeout),
     
     CYAML_FIELD_STRING_PTR(
         "listen-ip", CYAML_FLAG_POINTER, tpx_listen_conf_t, listen_ip,

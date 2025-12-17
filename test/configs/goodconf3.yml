@@ -1,0 +1,139 @@
+# Big conf
+
+nworkers: 999
+logfile: loglogloglog.log
+loglevel: ERROR
+
+listeners:
+  - name: 1
+    target-ip: 127.0.0.1
+    target-port: 1
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.1
+    listen-port: 41
+
+    cert-chain: 1
+    servkey: 1
+    servkeypass: simon
+  - name: 2
+    target-ip: 127.0.0.2
+    target-port: 2
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.2
+    listen-port: 42
+
+    cert-chain: 2
+    servkey: 2
+    servkeypass: simon
+  - name: 3
+    target-ip: 127.0.0.3
+    target-port: 3
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.3
+    listen-port: 43
+
+    cert-chain: 3
+    servkey: 3
+    servkeypass: simon
+  - name: 4
+    target-ip: 127.0.0.4
+    target-port: 4
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.4
+    listen-port: 44
+
+    cert-chain: 4
+    servkey: 4
+    servkeypass: simon
+  - name: 5
+    target-ip: 127.0.0.5
+    target-port: 5
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.5
+    listen-port: 45
+
+    cert-chain: 5
+    servkey: 5
+    servkeypass: simon
+  - name: 6
+    target-ip: 127.0.0.6
+    target-port: 6
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.6
+    listen-port: 46
+
+    cert-chain: 6
+    servkey: 6
+    servkeypass: simon
+  - name: 7
+    target-ip: 127.0.0.7
+    target-port: 7
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.7
+    listen-port: 47
+
+    cert-chain: 7
+    servkey: 7
+    servkeypass: simon
+  - name: 87
+    target-ip: 127.0.0.87
+    target-port: 87
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.87
+    listen-port: 487
+
+    cert-chain: 87
+    servkey: 87
+    servkeypass: simon
+  - name: 144
+    target-ip: 127.0.0.144
+    target-port: 144
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.144
+    listen-port: 4144
+
+    cert-chain: 144
+    servkey: 144
+    servkeypass: simon
+  - name: 200
+    target-ip: 127.0.0.200
+    target-port: 200
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.200
+    listen-port: 4200
+
+    cert-chain: 200
+    servkey: 200
+    servkeypass: simon
+  - name: 254
+    target-ip: 127.0.0.254
+    target-port: 254
+
+    connect-timeout: 7
+
+    listen-ip: 1.2.3.254
+    listen-port: 4254
+
+    cert-chain: 254
+    servkey: 254
+    servkeypass: simon

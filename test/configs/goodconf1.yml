@@ -20,8 +20,6 @@ listeners:
     listen-port: 8443
 
     ## The certificate chain offered to clients
-    ## If all you have is a self-signed server certificate, put it in
-    ## cert-chain instead of servcert, and leave servcert empty
     cacerts:
       - cacert.pem
       - intcert.pem

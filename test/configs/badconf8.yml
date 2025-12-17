@@ -1,0 +1,12 @@
+# Missing listen ip
+
+nworkers: 1
+listeners:
+  - name: ""
+    target-ip: 127.0.0.1
+    target-port: 9999
+    listen-port: 9999
+    cacerts:
+      - CA1
+    servcert: SC
+    servkey: SK

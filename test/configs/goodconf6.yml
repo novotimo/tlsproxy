@@ -1,0 +1,12 @@
+# Less than minimal
+
+
+nworkers: 0
+listeners:
+  - name: 
+    target-ip: 
+    target-port: 0
+    listen-ip: 
+    listen-port: 0
+    cert-chain:
+    servkey:

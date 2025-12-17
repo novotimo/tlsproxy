@@ -1,0 +1,14 @@
+# cacerts with cert-chain
+
+nworkers: 1
+listeners:
+  - name: ""
+    target-ip: 127.0.0.1
+    target-port: 8080
+    listen-ip: 127.0.0.43
+    listen-port: 9999
+    cacerts:
+      - CA1
+    cert-chain: a
+    servcert: SC
+    servkey: SK
