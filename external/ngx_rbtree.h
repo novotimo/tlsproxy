@@ -23,7 +23,7 @@ typedef uintptr_t       ngx_uint_t;
 
 typedef ngx_uint_t  ngx_rbtree_key_t;
 typedef ngx_int_t   ngx_rbtree_key_int_t;
-typedef __u_char u_char;
+typedef unsigned char u_char;
 
 #define ngx_inline inline
 
