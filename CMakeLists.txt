@@ -24,7 +24,7 @@ find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(CYAML REQUIRED libcyaml)
 
-add_library(proxy)
+add_library(proxy STATIC)
 target_include_directories(proxy PRIVATE inc external)
 target_sources(proxy
   PRIVATE
@@ -37,7 +37,6 @@ target_sources(proxy
   src/timeutils.c
   external/ngx_rbtree.c
 )
-#set_property(TARGET proxy PROPERTY C_STANDARD 99)
 
 add_executable(tlsproxy)
 
@@ -51,8 +50,14 @@ set_property(TARGET tlsproxy PROPERTY C_STANDARD 99)
 
 if (UNIT_TESTING)
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmocka)
-  # This is actually 2.0.0 but they forgot to version bump
-  find_package(cmocka REQUIRED)
+  include(FetchContent)
+  FetchContent_Declare(
+    cmocka
+    GIT_REPOSITORY https://gitlab.com/cmocka/cmocka.git
+    GIT_TAG        cmocka-2.0.0
+  )
+  FetchContent_MakeAvailable(cmocka)
+  
   include(AddCMockaTest)
   add_subdirectory(test)
 elseif (BUILD_DOC)

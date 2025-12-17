@@ -20,23 +20,6 @@ WRAPPED_FUNCS
 #undef WRAP_FUN
 
 
-/* If we fail to allocate a queue, return NULL */
-static void new_queue(void **state) {
-    will_return(__wrap_calloc, NULL);
-    bufq_t *q = queue_new();
-    assert_null(q);
-}
-
-/* If we fail to make a new member in the queue, return TPX_FAILURE */
-static void enqueue_fail(void **state) {
-    bufq_t *q = queue_new();
-    assert_non_null(q);
-    will_return(__wrap_malloc, NULL);
-    assert_int_equal(enqueue(q,NULL,0),TPX_FAILURE);
-    
-    queue_free(q);
-}
-
 /* This is what a new queue should look like. */
 static void new_queue_valid(void **state) {
     bufq_t *q = queue_new();
@@ -232,11 +215,26 @@ static void free_inconsistent(void **state) {
     free(buf);
 }
 
+/* If we fail to allocate a queue, return NULL */
+static void new_queue(void **state) {
+    will_return_ptr(__wrap_calloc, NULL);
+    bufq_t *q = queue_new();
+    assert_null(q);
+}
+
+/* If we fail to make a new member in the queue, return TPX_FAILURE */
+static void enqueue_fail(void **state) {
+    bufq_t *q = queue_new();
+    assert_non_null(q);
+    will_return_ptr(__wrap_malloc, NULL);
+    assert_int_equal(enqueue(q,NULL,0),TPX_FAILURE);
+    
+    queue_free(q);
+}
+
 
 int main(void) {
     const struct CMUnitTest tests[] = {
-        cmocka_unit_test(new_queue),
-        cmocka_unit_test(enqueue_fail),
         cmocka_unit_test(new_queue_valid),
         cmocka_unit_test(buf_returned_unmolested),
         cmocka_unit_test(empty_queues),
@@ -246,6 +244,8 @@ int main(void) {
         cmocka_unit_test(inconsistent_queue),
         cmocka_unit_test(peek_empty),
         cmocka_unit_test(free_inconsistent),
+        cmocka_unit_test(new_queue),
+        cmocka_unit_test(enqueue_fail),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
