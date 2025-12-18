@@ -25,10 +25,13 @@ RUN set -x \
     && adduser -S -D -H -u 2001 -h / -s /sbin/nologin -G tlsproxy -g tlsproxy tlsproxy \
     && apk add --no-cache --virtual openssl \
     && apk add --no-cache -X http://dl-cdn.alpinelinux.org/alpine/edge/testing libcyaml \
-    && mkdir /etc/tlsproxy && chown tlsproxy:tlsproxy /etc/tlsproxy
+    && mkdir /etc/tlsproxy && chown tlsproxy:tlsproxy /etc/tlsproxy \
+    && mkdir /var/log/tlsproxy && chown tlsproxy:tlsproxy /var/log/tlsproxy
 
 COPY --from=build /src/build/tlsproxy /usr/bin
-COPY example/* /etc/tlsproxy
 RUN chown tlsproxy:tlsproxy /usr/bin/tlsproxy && chmod u+x /usr/bin/tlsproxy
+
+
+USER 2001:2001
 
 CMD ["tlsproxy", "/etc/tlsproxy/default.yml"]

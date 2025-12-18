@@ -1,0 +1,27 @@
+services:
+  web:
+    hostname: nginx-web
+    image: nginx:latest
+    networks:
+      - proxy-demo
+
+  prox:
+    image: tlsproxy:latest
+    networks:
+      - proxy-demo
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - type: bind
+        source: ./config
+        target: /etc/tlsproxy
+      - type: bind
+        source: ./logs
+        target: /var/log/tlsproxy
+    ports:
+      - 443:443
+
+networks:
+  proxy-demo:

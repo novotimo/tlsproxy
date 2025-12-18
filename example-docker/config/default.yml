@@ -1,0 +1,19 @@
+nworkers: 4
+logfile: /var/log/tlsproxy/tlsproxy.log
+loglevel: DEBUG
+
+listeners:
+  - name: https
+    target-ip: "nginx-web"
+    target-port: 80
+
+    connect-timeout: 5000
+
+    listen-ip: 0.0.0.0
+    listen-port: 443
+
+    cacerts:
+      - /etc/tlsproxy/cacert.pem
+      - /etc/tlsproxy/intcert.pem
+    servcert: /etc/tlsproxy/servcert.pem
+    servkey: /etc/tlsproxy/servkey.pem
