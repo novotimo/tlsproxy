@@ -1,6 +1,6 @@
 nworkers: 4
 logfile: /var/log/tlsproxy/tlsproxy.log
-loglevel: DEBUG
+loglevel: INFO
 
 listeners:
   - name: https

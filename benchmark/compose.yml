@@ -1,0 +1,104 @@
+version: '3'
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - 9090:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - 8080:8080
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - 9100:9100
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - 3000:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+  web:
+    hostname: nginx-web
+    image: nginx:latest
+    networks:
+      - proxy-demo
+
+  tlsproxy:
+    image: tlsproxy:latest
+    networks:
+      - proxy-demo
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - type: bind
+        source: ../example-docker/config
+        target: /etc/tlsproxy
+      - type: bind
+        source: ../example-docker/logs
+        target: /var/log/tlsproxy
+    ports:
+      - 10001:443
+
+  tlsterminator:
+    image: nginx:1.29.4-alpine
+    networks:
+      - proxy-demo
+    cap_drop:
+      - ALL
+    volumes:
+      - type: bind
+        source: ./nginx/ssl
+        target: /etc/nginx/ssl
+      - type: bind
+        source: ${PWD}/nginx/nginx.conf
+        target: /etc/nginx/nginx.conf
+      - type: bind
+        source: ${PWD}/nginx/server.conf
+        target: /etc/nginx/server.conf
+      - type: bind
+        source: /tmp/nginx
+        target: /tmp
+    ports:
+      - 10002:8443
+    user: 1000:1000
+
+volumes:
+  prometheus_data: {}
+  grafana_data: {}
+  
+networks:
+  proxy-demo: {}

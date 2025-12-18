@@ -12,6 +12,12 @@ if (ASAN)
   add_link_options(-fsanitize=address -static-libasan)
 endif()
 
+if (PROFILING)
+  add_compile_options(-pg)
+  add_link_options(-pg)
+endif()
+
+
 configure_file(
   ${CMAKE_SOURCE_DIR}/inc/version.h.in
   ${CMAKE_SOURCE_DIR}/inc/version.h
