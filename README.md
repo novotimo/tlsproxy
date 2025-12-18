@@ -1,6 +1,39 @@
 # TLS Proxy README
 
-This is an event-based TLS proxy server inspired by nginx. It is based on `epoll()` and so is currently Linux-only, and I currently don't plan to extend it to similar platforms that provide similar interfaces. I may possibly change my mind.
+TLS termination proxy made to handle (tens of) thousands of concurrent connections. Has comparable* performance to nginx, at a tiny fraction of the attack surface!
+
+(*) It's faster than nginx in almost everything but HTTPS reverse proxying, since nginx has some very nice connection pooling and socket reuse methods exclusive to HTTP that they use. If you want to proxy HTTP to HTTPS, use nginx reverse proxy.
+
+## Speed
+
+Here are some apib benchmarks done against nginx, see the `benchmark/` folder for details.
+
+Left (yellow) is nginx, total of 9 million (9105624) requests over 5 minutes, and right (green) is tlsproxy, total of 18 million (18414469) requests over 5 minutes:
+<img width="3346" height="1577" alt="image" src="https://github.com/user-attachments/assets/27997d0a-2f3a-4f73-86f1-d9236285ab37" />
+
+Send/receive bandwidth for nginx: 13.66Mbit/s send, 197.52Mbit/s receive.
+Send/receive bandwidth for tlsproxy: 27.66Mbit/s send, 399.45Mbit/s receive.
+
+Memory usage for nginx: 34MB + 700MB cache, memory usage for tlsproxy was 69MB.
+
+## Try it out
+
+### Full demo
+
+All you need to do is download the `example-docker/` folder, cd into it, and run `docker compose -f compose.yml up`, and you should get a TLS proxy which listens on port 443 and forwards HTTPS requests over a docker network to an nginx HTTP server. Try pointing your browser to https://localhost.
+
+### Demo with your own plain server
+
+You can try this out as a docker image. First get the docker image:
+
+```
+$ docker pull novotimo/tlsproxy:latest
+```
+
+Then, get your config and certs. An example config and certs can be found in `example-docker/config/`. Point the `target-ip` and `target-port` config options to your plain server, and set the `listen-port` to whatever you want. Then, run:
+```
+$ docker run --name tlsproxy --volume ${PWD}/example-docker/config/:/etc/tlsproxy --expose=443 novotimo/tlsproxy:latest
+```
 
 ## Compiling
 
