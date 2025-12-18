@@ -26,8 +26,11 @@
 
 
 #define TPX_MAX_EVENTS 100 /**< @brief The maximum number of events in epoll */
-#define TPX_NARGS 2 /**< @brief The number of arguments to this program */
+#define TPX_NARGS_MIN 1
+#define TPX_NARGS_MAX 2
 #define TPX_ARG_CONFFILE 1 /**< @brief The config file argument */
+#define TPX_CONFIG_DIR "/etc/tlsproxy"
+#define TPX_DEFAULT_CONF "tlsproxy.yml"
 
 #define NAME closed /**< @brief The name of the hash set */
 #define KEY_TY uint64_t /**< @brief The key type of the hash set */
@@ -152,14 +155,21 @@ void block_signals(sigset_t *mask, int logfd) {
 int main(int argc, char *argv[]) {
     printf("TLS Proxy starting\n");
     
-    if (argc != TPX_NARGS)   
+    if (argc < TPX_NARGS_MIN || argc > TPX_NARGS_MAX)
         usage(argv[0]);
 
-    size_t cfilelen = strlen(argv[TPX_ARG_CONFFILE]);
-    config_fname = malloc(cfilelen+1);
-    strncpy(config_fname, argv[TPX_ARG_CONFFILE], cfilelen);
-    config_fname[cfilelen] = '\0';
-    tpx_config_t *tpx_config = load_config(argv[TPX_ARG_CONFFILE]);
+    if (argc == 1) {
+        const char *conf_fname = TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF;
+        size_t cfilelen = strlen(conf_fname);
+        config_fname = malloc(cfilelen+1);
+        strncpy(config_fname, conf_fname, cfilelen);
+    } else {
+        size_t cfilelen = strlen(argv[TPX_ARG_CONFFILE]);
+        config_fname = malloc(cfilelen+1);
+        strncpy(config_fname, argv[TPX_ARG_CONFFILE], cfilelen);
+        config_fname[cfilelen] = '\0';
+    }
+    tpx_config_t *tpx_config = load_config(config_fname);
 
     // Init logging ASAP
     init_shmem(tpx_config);

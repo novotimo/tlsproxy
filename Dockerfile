@@ -34,4 +34,4 @@ RUN chown tlsproxy:tlsproxy /usr/bin/tlsproxy && chmod u+x /usr/bin/tlsproxy
 
 USER 2001:2001
 
-CMD ["tlsproxy", "/etc/tlsproxy/default.yml"]
+CMD ["tlsproxy"]
