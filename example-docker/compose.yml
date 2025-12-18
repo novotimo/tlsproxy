@@ -6,7 +6,7 @@ services:
       - proxy-demo
 
   prox:
-    image: tlsproxy:latest
+    image: novotimo/tlsproxy:latest
     networks:
       - proxy-demo
     cap_drop:
