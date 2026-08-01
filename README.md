@@ -63,7 +63,7 @@ This will build everything into the `build/` directory.
 
 ### Caveats
 
-`libcyaml` doesn't use CMake so our `CMakeLists.txt` assumes it's installed under the `/usr/local` prefix. If it isn't, to build this you'll have to point the `IMPORTED_LOCATION` and `INTERFACE_INCLUDE_DIRECTORIES` of the `cyaml` library in `CMakeLists.txt` to your installed libs and includes.
+`libcyaml` doesn't use CMake so our `CMakeLists.txt` assumes it's installed under the `/usr/local` prefix. If it isn't, to build this you'll have to point the `IMPORTED_LOCATION` and `INTERFACE_INCLUDE_DIRECTORIES` of the `cyaml` library in `CMakeLists.txt` to your installed libs and includes. If you run `cmake -B build` and it says "The following required packages were not found: - libcyaml", then you probably need to add `/usr/local/lib/pkgconfig` to `$PKG_CONFIG_PATH`.
 
 ## Usage
 
