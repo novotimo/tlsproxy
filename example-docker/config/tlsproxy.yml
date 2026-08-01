@@ -10,7 +10,7 @@ listeners:
     connect-timeout: 5000
 
     listen-ip: 0.0.0.0
-    listen-port: 443
+    listen-port: 8443
 
     cacerts:
       - /etc/tlsproxy/cacert.pem
