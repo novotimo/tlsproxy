@@ -181,7 +181,7 @@ int create_connect(proxy_t *proxy);
 int outbuf_empty(proxy_t *proxy, int is_client);
 
 /** @brief Init the timeout rbtree */
-void proxy_init_timeouts();
+void proxy_init_timeouts(void);
 
 /** @brief Handle the proxy getting a timeout. */
 tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd);

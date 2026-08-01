@@ -39,7 +39,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(CYAML REQUIRED libcyaml)
 
 add_library(proxy STATIC)
-target_include_directories(proxy PRIVATE inc external)
+target_include_directories(proxy PRIVATE inc)
+target_include_directories(proxy SYSTEM PRIVATE external)
 target_sources(proxy
   PRIVATE
   src/config.c
@@ -59,7 +60,8 @@ target_sources(tlsproxy
   PRIVATE
   app/main.c
 )
-target_include_directories(tlsproxy PRIVATE inc external)
+target_include_directories(tlsproxy PRIVATE inc)
+target_include_directories(tlsproxy SYSTEM PRIVATE external)
 set_property(TARGET tlsproxy PROPERTY C_STANDARD 99)
 
 if (UNIT_TESTING)

@@ -40,7 +40,7 @@
 
 
 void usage(const char *prog);
-void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs, int efd,
+void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs,
                 int sigfd);
 void parent_loop(tpx_config_t **tpx_config, pid_t **pids,
                  int *logfd, int sigfd, int efd);
@@ -52,7 +52,7 @@ void free_listeners(listen_t **listeners, size_t len);
 static inline uint64_t del_tag(void *ptr);
 
 void block_signals(sigset_t *mask, int logfd);
-void init_shmem(tpx_config_t *config);
+void init_shmem(void);
 int init_logger(tpx_config_t *config);
 
 SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd);
@@ -86,7 +86,7 @@ char *config_fname = NULL;
 uint8_t in_startup = 1;
 uint8_t respawn = 0;
 uint8_t in_shutdown = 0;
-int left_to_close = 0;
+size_t left_to_close = 0;
 extern uint32_t nproxies;
 
 
@@ -108,7 +108,7 @@ void _child_fatal(const char *msg, int errtype) {
         errx(EXIT_FAILURE, "%s", msg);
 }
 
-void init_shmem(tpx_config_t *config) {
+void init_shmem(void) {
     g_shmem = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE,
                            MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (g_shmem == MAP_FAILED)
@@ -160,8 +160,8 @@ int main(int argc, char *argv[]) {
 
     if (argc == 1) {
         const char *conf_fname = TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF;
-        size_t cfilelen = strlen(conf_fname);
-        config_fname = malloc(cfilelen+1);
+        size_t cfilelen = sizeof(TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF);
+        config_fname = malloc(cfilelen);
         strncpy(config_fname, conf_fname, cfilelen);
     } else {
         size_t cfilelen = strlen(argv[TPX_ARG_CONFFILE]);
@@ -172,7 +172,7 @@ int main(int argc, char *argv[]) {
     tpx_config_t *tpx_config = load_config(config_fname);
 
     // Init logging ASAP
-    init_shmem(tpx_config);
+    init_shmem();
     int logfd = init_logger(tpx_config);
     if (logfd == -1)
         printf("Disabling logging\n");
@@ -211,8 +211,8 @@ int main(int argc, char *argv[]) {
 
     // We need to save this here so that we can free the right amount
     // of SSL_CTXs after reload
-    int nlisteners = tpx_config->listeners_count;
-    SSL_CTX **ssl_ctxs;
+    size_t nlisteners = tpx_config->listeners_count;
+    SSL_CTX **ssl_ctxs = NULL;
     for (;;) {
         // When respawning:
         // - respawn is set to 1
@@ -221,11 +221,11 @@ int main(int argc, char *argv[]) {
         // - ssl_ctxs are already there
         if (!respawn) {
             ssl_ctxs = calloc(nlisteners, sizeof(SSL_CTX *));
-            for (int i=0; i<nlisteners; ++i)
+            for (size_t i=0; i<nlisteners; ++i)
                 ssl_ctxs[i] = init_openssl(&tpx_config->listeners[i], logfd);
         }
         
-        for (int i=0; i<tpx_config->nworkers; ++i) {
+        for (size_t i=0; i<tpx_config->nworkers; ++i) {
             // If this isn't the worker needing a respawn
             if (respawn && pids[i] != -1)
                 continue;
@@ -233,10 +233,11 @@ int main(int argc, char *argv[]) {
             switch (pid) {
             case -1:
                 _fatal(logfd, "Couldn't fork worker process", TPX_ERR_ERRNO);
+                exit(EXIT_FAILURE);
             case 0:
                 free(pids);
                 sprintf(argv[0], "tlsproxy: worker");
-                child_loop(tpx_config, ssl_ctxs, efd, sfd);
+                child_loop(tpx_config, ssl_ctxs, sfd);
                 exit(EXIT_SUCCESS);
             default:
                 pids[i] = pid;
@@ -249,7 +250,7 @@ int main(int argc, char *argv[]) {
 
         // From here on out the config could have been reloaded
         if (!respawn) {
-            for (int i=0; i<nlisteners; ++i) {
+            for (size_t i=0; i<nlisteners; ++i) {
                 SSL_CTX_free(ssl_ctxs[i]);
             }
             free(ssl_ctxs);
@@ -281,7 +282,7 @@ void parent_loop(tpx_config_t **config_,
     ev.events = EPOLLIN;
     ev.data.fd = efd;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev) == -1) {
-        for (int i=0; i<config->nworkers; ++i)
+        for (size_t i=0; i<config->nworkers; ++i)
             kill(pids[i], SIGKILL);
         _fatal(logfd, "Couldn't add eventfd to epoll", TPX_ERR_ERRNO);
     }
@@ -289,7 +290,7 @@ void parent_loop(tpx_config_t **config_,
     ev.events = EPOLLIN;
     ev.data.fd = sigfd;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &ev) == -1) {
-        for (int i=0; i<config->nworkers; ++i)
+        for (size_t i=0; i<config->nworkers; ++i)
             kill(pids[i], SIGKILL);
         _fatal(logfd, "Couldn't add signalfd to epoll", TPX_ERR_ERRNO);
     }
@@ -298,7 +299,10 @@ void parent_loop(tpx_config_t **config_,
     uint8_t finishing = 0;
     for (;;) {
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
-        for (size_t n=0; n<nfds; ++n) {
+
+        if (nfds == -1)
+            _fatal(logfd, "Couldn't wait on the epollfd", TPX_ERR_ERRNO);
+        for (size_t n=0; n<(size_t)nfds; ++n) {
             if (events[n].data.fd == efd) {
                 uint64_t count = 0;
                 if (read(efd, &count, sizeof(count)) < 0) {
@@ -312,7 +316,6 @@ void parent_loop(tpx_config_t **config_,
                 while (read(sigfd, &si, sizeof(si)) == sizeof(si)) {
                     log_signal_m(logfd, LL_INFO, &si);
 
-                    int sig;
                     if (si.ssi_signo == SIGCHLD) {
                         // Don't want to leave any zombies
                         pid_t pid = -1;
@@ -321,12 +324,12 @@ void parent_loop(tpx_config_t **config_,
                             log_worker(logfd, LL_WARN, 0, pid, wstatus);
 
                             if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 77) {
-                                for (int i=0; i<config->nworkers; ++i)
+                                for (size_t i=0; i<config->nworkers; ++i)
                                     kill(pids[i], SIGKILL);
                                 exit(77);
                             }
 
-                            for (int i=0; i<config->nworkers; ++i) {
+                            for (size_t i=0; i<config->nworkers; ++i) {
                                 if (pids[i] == pid) {
                                     if (in_shutdown) {
                                         --left_to_close;
@@ -353,7 +356,7 @@ void parent_loop(tpx_config_t **config_,
                 
                     in_shutdown = 1;
                     left_to_close = config->nworkers;
-                    for (int i=0; i<left_to_close; ++i)
+                    for (size_t i=0; i<left_to_close; ++i)
                         kill(pids[i], SIGHUP);
                 }
             }
@@ -370,7 +373,7 @@ cleanup:
     close(epollfd);
 }
 
-void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs, int efd,
+void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs,
                 int sigfd) {
     int epollfd = epoll_create1(0);
     if (epollfd == -1)
@@ -397,7 +400,7 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs, int efd,
     
     for (;;) {
         if (in_shutdown && nproxies == 0) {
-            for (int i=0; i<tpx_config->listeners_count; ++i)
+            for (size_t i=0; i<tpx_config->listeners_count; ++i)
                 SSL_CTX_free(ssl_ctxs[i]);
             free(ssl_ctxs);
             
@@ -432,13 +435,27 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs, int efd,
         }
         
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, next_timeout);
-        for (size_t n=0; n < nfds; ++n) {
+        if (nfds == -1) {
+          switch(errno) {
+          case EINTR:
+            log_system_err(LL_ERROR, "Waiting on epoll", TPX_ERR_ERRNO);
+            break;
+          default:
+            _child_fatal("Waiting on epoll", TPX_ERR_ERRNO);
+            return;
+          }
+        }
+          
+        for (size_t n=0; n < (size_t)nfds; ++n) {
             if (events[n].data.fd == sigfd) {
                 struct signalfd_siginfo si;
-                read(sigfd, &si, sizeof(si));
+
+                // This should never happen
+                if (read(sigfd, &si, sizeof(si)) == -1)
+                  _child_fatal("Reading sigfd", TPX_ERR_ERRNO);
+
                 log_signal(LL_INFO, &si);
 
-                int sig;
                 if (si.ssi_signo == SIGHUP) {
                     close_listeners(epollfd, listeners, nlisteners);
                     in_shutdown = 1;
@@ -490,7 +507,7 @@ listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len,
                            SSL_CTX **ssl_ctxs) {
     *len = tpx_config->listeners_count;
     listen_t **listeners = calloc(*len, sizeof(listen_t *));
-    for (int i=0; i < *len; ++i) {
+    for (size_t i=0; i < *len; ++i) {
         const tpx_listen_conf_t *lconf = &tpx_config->listeners[i];
         listeners[i] = create_listener(lconf, ssl_ctxs[i]);
         
@@ -507,14 +524,14 @@ listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len,
 }
 
 void close_listeners(int epollfd, listen_t **listeners, size_t len) {
-    for (int i=0; i<len; ++i) {
+    for (size_t i=0; i<len; ++i) {
         epoll_ctl(epollfd, EPOLL_CTL_DEL, listeners[i]->fd, NULL);
         close(listeners[i]->fd);
     }
 }
 
 void free_listeners(listen_t **listeners, size_t len) {
-    for (int i=0; i<len; ++i)
+    for (size_t i=0; i<len; ++i)
         free(listeners[i]);
 }
 
@@ -533,10 +550,10 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
         return NULL;
     }
 
-    int opts =
-        SSL_OP_IGNORE_UNEXPECTED_EOF
-        | SSL_OP_NO_RENEGOTIATION
-        | SSL_OP_CIPHER_SERVER_PREFERENCE;
+    uint64_t opts =
+               SSL_OP_IGNORE_UNEXPECTED_EOF
+               | SSL_OP_NO_RENEGOTIATION
+               | SSL_OP_CIPHER_SERVER_PREFERENCE;
     
     SSL_CTX_set_options(ctx, opts);
 
@@ -603,7 +620,7 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
 int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     X509_STORE *store = X509_STORE_new();
     X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
-    for (int i=0; i<config->cacerts_count; ++i) {
+    for (size_t i=0; i<config->cacerts_count; ++i) {
         if (!X509_LOOKUP_load_file(lookup, config->cacerts[i],
                                    X509_FILETYPE_PEM)) {
             _fatal(logfd, "Couldn't load CA certificate", TPX_ERR_OSSL);
@@ -654,7 +671,7 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     // This could be done better, I imagine. Make sure to watch config.c for
     // changes to the logic in tpx_validate_conf
-    for (int i=0; i<new_config->listeners_count; ++i) {
+    for (size_t i=0; i<new_config->listeners_count; ++i) {
         const tpx_listen_conf_t *listen_conf = &new_config->listeners[i];
         if (!listen_conf->cert_chain && !listen_conf->cacerts) {
             log_system_err_m_ex(
@@ -702,7 +719,7 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
     }
 
 
-    for (int i=0; i<new_config->listeners_count; ++i) {
+    for (size_t i=0; i<new_config->listeners_count; ++i) {
         // We don't actually use this context we've made, we just want to
         // prove that it will be made without errors
         SSL_CTX *ssl_ctx = init_openssl(&new_config->listeners[i], new_logfd);
@@ -715,7 +732,7 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
     }
 
     // Now we're fully convinced our new config is good
-    int old_workers = (*config)->nworkers;
+    size_t old_workers = (*config)->nworkers;
     cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)*config, 0);
     close(*logfd);
 
@@ -728,7 +745,7 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
         goto restore_shmem;
     }
 
-    for (int i=0; i<old_workers; ++i)
+    for (size_t i=0; i<old_workers; ++i)
         kill((*pids)[i], SIGHUP);
     left_to_close = old_workers;
     free(*pids);

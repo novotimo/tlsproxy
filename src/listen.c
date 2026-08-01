@@ -17,7 +17,7 @@
 #include "proxy.h"
 
 
-tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events) {
+tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     assert(listen->event_id == EV_LISTEN);
     
     struct sockaddr_storage addr;

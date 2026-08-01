@@ -33,12 +33,11 @@ typedef struct listen_s {
  * from that connection, and pushes it to the epollfd.
  * @param listen The listen context
  * @param epollfd The epoll fd
- * @param events The epoll events ready on the socket
  * @param ssl_ctx The OpenSSL ctx which should contain a fully built cert
  *                chain and also be otherwise initialized.
  * @return The outcome of handling the event, either TPX_SUCCESS or TPX_FAILURE.
  */
-tpx_err_t handle_accept(listen_t *listen, int epollfd, uint32_t events);
+tpx_err_t handle_accept(listen_t *listen, int epollfd);
 
 /**
  * @brief Makes a connection ctx for a listen socket.

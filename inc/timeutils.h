@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 
-uint64_t gettime();
+uint64_t gettime(void);
 int timeout_expired(uint64_t expiring);
 
 

@@ -62,8 +62,8 @@ shared_t *g_shmem;
 
 
 // Get static strings containing info for log metadata
-const char *_rfc3339_time();
-const char *_pid();
+const char *_rfc3339_time(void);
+const char *_pid(void);
 const char *strlevel(loglevel_t level);
 
 // Each _linebuf function returns -1 when the buffer is full and 0 otherwise
@@ -105,7 +105,7 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         errx(EXIT_FAILURE,
              "Somehow write_logs was called when logging was disabled");
 
-    for (int i=0; i<evt_count; ++i) {
+    for (size_t i=0; i<evt_count; ++i) {
         // Make sure our write index doesn't change during loop
         uint64_t w_idx = logger->write_idx;
         int wrapped = w_idx < logger->read_idx;
@@ -126,11 +126,11 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             logger->read_idx+=LINEBUF_OFFSET;
         } else {
             union {
-                unsigned char b[LINEBUF_OFFSET];
+                char b[LINEBUF_OFFSET];
                 uint32_t i;
             } u;
-            for (int i=0; i<LINEBUF_OFFSET; ++i) {
-                u.b[i] = logger->log_buf[logger->read_idx];
+            for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
+                u.b[j] = logger->log_buf[logger->read_idx];
                 INC_WRAP(logger->read_idx);
             }
             linelen = u.i;
@@ -152,7 +152,7 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             logger->read_idx = 0;
 
         // If we need to wrap around
-        if (wrapped && nwritten == len_to_end && linelen > len_to_end) {
+        if (wrapped && (size_t)nwritten == len_to_end && linelen > len_to_end) {
             size_t remaining = linelen - len_to_end;
             
             assert(logger->read_idx == 0);
@@ -218,13 +218,14 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
                                     state, strlen(state)));
     
     static char intstr[12];
-    assert(snprintf(intstr, sizeof(intstr), "%d", worker_pid) < sizeof(intstr));
+    assert(sizeof(intstr) < INT_MAX);
+    assert(snprintf(intstr, sizeof(intstr), "%d", worker_pid) < (int)sizeof(intstr));
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_pid", intstr,
                                     strlen(intstr)));
 
     if (wstatus != -1 && WIFSIGNALED(wstatus)) {
         assert(snprintf(intstr, sizeof(intstr), "%d", WTERMSIG(wstatus))
-               < sizeof(intstr));
+               < (int)sizeof(intstr));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "signal",
                                         sizeof("signal")-1));
@@ -233,7 +234,7 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
                                         strlen(intstr)));
     } else if (wstatus != -1 && WIFEXITED(wstatus)) {
         assert(snprintf(intstr, sizeof(intstr), "%d", WEXITSTATUS(wstatus))
-               < sizeof(intstr));
+               < (int)sizeof(intstr));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "exited",
                                         sizeof("signal")-1));
@@ -403,7 +404,7 @@ void log_signal(loglevel_t level, struct signalfd_siginfo *si) {
     _write_linebuf(logger, &linebuf);
 }
 
-const char *getstraddr(struct sockaddr *sa, socklen_t len, uint16_t *port) {
+const char *getstraddr(struct sockaddr *sa, uint16_t *port) {
     static char ipaddr[TPX_IPV6_MAXLEN];
     ipaddr[0]='\0';
     
@@ -443,7 +444,7 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
     static char portstr[12];
     if (proxy->client_addr.ss_family != AF_UNSPEC) {
         const char *client_ip = getstraddr((struct sockaddr *)&proxy->client_addr,
-                                           proxy->client_addrlen, &port);
+                                           &port);
         snprintf(portstr, sizeof(portstr), "%hu", port);
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " client_ip",
                                         client_ip, strlen(client_ip)));
@@ -453,8 +454,7 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
 
     if (proxy->listener->listen_addr.ss_family != AF_UNSPEC) {
         const char *listen_ip =
-            getstraddr((struct sockaddr *)&proxy->listener->listen_addr,
-                       proxy->listener->listen_addrlen, &port);
+            getstraddr((struct sockaddr *)&proxy->listener->listen_addr, &port);
         snprintf(portstr, sizeof(portstr), "%hu", port);
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_ip",
                                         listen_ip, strlen(listen_ip)));
@@ -464,8 +464,7 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
 
     if (proxy->listener->peer_addr.ss_family != AF_UNSPEC) {
         const char *server_ip =
-            getstraddr((struct sockaddr *)&proxy->listener->peer_addr,
-                       proxy->listener->peer_addrlen, &port);
+            getstraddr((struct sockaddr *)&proxy->listener->peer_addr, &port);
         snprintf(portstr, sizeof(portstr), "%hu", port);
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " server_ip",
                                         server_ip, strlen(server_ip)));
@@ -527,7 +526,7 @@ void log_listen(loglevel_t level, listen_t *listener) {
         GUARD_APPEND(_linebuf_append(&linebuf, " cacerts=\"",
                                      sizeof(" cacerts=\"")-1,
                                      TPX_MODE_NONE));
-        for (int i=0; i < config->cacerts_count; ++i) {
+        for (size_t i=0; i < config->cacerts_count; ++i) {
             GUARD_APPEND(_linebuf_append(&linebuf, config->cacerts[i],
                                          strlen(config->cacerts[i]),
                                          TPX_MODE_SANITIZE));
@@ -567,7 +566,7 @@ void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome) {
     static char portstr[12];
     if (proxy->client_addr.ss_family != AF_UNSPEC) {
         const char *client_ip = getstraddr((struct sockaddr *)&proxy->client_addr,
-                                           proxy->client_addrlen, &port);
+                                           &port);
         snprintf(portstr, sizeof(portstr), "%hu", port);
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " client_ip",
                                         client_ip, strlen(client_ip)));
@@ -577,8 +576,7 @@ void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome) {
 
     if (proxy->listener->listen_addr.ss_family != AF_UNSPEC) {
         const char *listen_ip =
-            getstraddr((struct sockaddr *)&proxy->listener->listen_addr,
-                       proxy->listener->listen_addrlen, &port);
+            getstraddr((struct sockaddr *)&proxy->listener->listen_addr, &port);
         snprintf(portstr, sizeof(portstr), "%hu", port);
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_ip",
                                         listen_ip, strlen(listen_ip)));
@@ -621,15 +619,18 @@ void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome) {
 int _base_schema(linebuf_t *linebuf, int is_master, loglevel_t level,
                  const char *event) {
     static char metadata[128];
-    size_t len = snprintf(metadata, sizeof(metadata),
+    int len = snprintf(metadata, sizeof(metadata),
                           "timestamp=%s service=%s process_type=%s pid=%s "
                           "level=%s event=%s",
                           _rfc3339_time(), "tlsproxy",
                           is_master ? "master" : "worker", _pid(),
                           strlevel(level), event);
-    if (len >= sizeof(metadata))
-        len = sizeof(metadata)-1;
-    return _linebuf_append(linebuf, metadata, len, TPX_MODE_NONE);
+
+    // TODO: handle a negative return from snprintf
+
+    if (len >= (int)sizeof(metadata))
+      len = (int)sizeof(metadata)-1;
+    return _linebuf_append(linebuf, metadata, (size_t)len, TPX_MODE_NONE);
 }
 
 int _linebuf_putc(linebuf_t *linebuf, const char c) {
@@ -697,7 +698,7 @@ int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
     return 0;
 }
 
-const char *_rfc3339_time() {
+const char *_rfc3339_time(void) {
     static char timebuf[64];
     time_t now = time(NULL);
     struct tm local_time;
@@ -706,7 +707,7 @@ const char *_rfc3339_time() {
     return timebuf;
 }
 
-const char *_pid() {
+const char *_pid(void) {
     static char pid[10];
     snprintf(pid, sizeof(pid)-1, "%d", getpid());
     return pid;
@@ -720,9 +721,8 @@ const char *strlevel(loglevel_t level) {
 void _write_linebuf_fd(int logfd, linebuf_t *linebuf) {
     linebuf->u.buf[linebuf->u.len++] = '\n';
 
-    ssize_t retcode = write(logfd, &linebuf->u.buf[LINEBUF_OFFSET],
-                            linebuf->u.len - LINEBUF_OFFSET);
-    if (retcode == -1)
+    if (write(logfd, &linebuf->u.buf[LINEBUF_OFFSET],
+              linebuf->u.len - LINEBUF_OFFSET) == -1)
         perror("Writing log failed");
 }
 
@@ -768,7 +768,8 @@ void _write_linebuf(logger_t *logger, linebuf_t *line) {
     
     // Notify the parent process that we're ready to go
     uint64_t count=1;
-    write(logger->eventfd, &count, sizeof(count));
+    if (write(logger->eventfd, &count, sizeof(count)) == -1)
+      perror("Notifying parent process failed");
 }
 
 void _log_system_err(linebuf_t *linebuf, loglevel_t level,
@@ -806,7 +807,7 @@ void _log_signal(linebuf_t *linebuf, loglevel_t level,
     GUARD_APPEND(_linebuf_append_kv(linebuf, " signal_num", signum,
                                     strlen(signum)));
 
-    const char *sstr = strsignal(si->ssi_signo);
+    const char *sstr = strsignal((int)si->ssi_signo);
     GUARD_APPEND(_linebuf_append_kv(linebuf, " signal_string",
                                     sstr, strlen(sstr)));
 
