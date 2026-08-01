@@ -5,6 +5,8 @@ project(TLSProxy VERSION 0.9.0 LANGUAGES C)
 if (UNIT_TESTING)
   add_compile_definitions(UNIT_TESTING)
   add_compile_options(-O0)
+else()
+  add_compile_options(-O2)
 endif()
 
 if (ASAN)
@@ -17,6 +19,12 @@ if (PROFILING)
   add_link_options(-pg)
 endif()
 
+
+# All of the warnings, and count them as errors
+add_compile_options(-Wall -Wextra -Wshadow -Wsign-conversion -Wpointer-arith
+                    -Wstrict-prototypes -Wwrite-strings -Wno-hardened)
+# Security compile options
+add_compile_options(-fhardened -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fno-strict-aliasing)
 
 configure_file(
   ${CMAKE_SOURCE_DIR}/inc/version.h.in
