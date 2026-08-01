@@ -5,11 +5,11 @@
 
 /* "Borrowed" from nginx's ngx_times.c          *
  * See their copyright in external/ngx_rbtree.c */
-uint64_t gettime() {
+uint64_t gettime(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    time_t sec = ts.tv_sec;
-    uint64_t msec = ts.tv_nsec / 1000000;
+    uint64_t sec = (uint64_t)ts.tv_sec;
+    uint64_t msec = (uint64_t)ts.tv_nsec / 1000000;
     return sec * 1000 + msec;
 }
 

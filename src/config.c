@@ -39,7 +39,7 @@ int tpx_validate_conf(const tpx_config_t *config) {
         fprintf(stderr, "Config error: No listeners provided\n");
         return TPX_FAILURE;
     }
-    for (int i=0; i<config->listeners_count; ++i)
+    for (size_t i=0; i<config->listeners_count; ++i)
         if (tpx_validate_conf_l(&config->listeners[i]) == TPX_FAILURE)
             return TPX_FAILURE;
     return TPX_SUCCESS;

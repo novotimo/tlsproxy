@@ -5,6 +5,8 @@ project(TLSProxy VERSION 0.9.0 LANGUAGES C)
 if (UNIT_TESTING)
   add_compile_definitions(UNIT_TESTING)
   add_compile_options(-O0)
+else()
+  add_compile_options(-O2)
 endif()
 
 if (ASAN)
@@ -16,6 +18,46 @@ if (PROFILING)
   add_compile_options(-pg)
   add_link_options(-pg)
 endif()
+
+
+include(CheckCCompilerFlag)
+
+# Warnings
+add_library(warnings INTERFACE)
+target_compile_options(warnings INTERFACE
+                       -Wall -Wextra -Wshadow -Wsign-conversion -Wpointer-arith
+                       -Wstrict-prototypes -Wwrite-strings
+                       -Wimplicit-fallthrough=5 -Werror)
+
+# Hardening
+check_c_compiler_flag(-Whardened HAVE_W_HARDENED)
+check_c_compiler_flag(-fhardened HAVE_F_HARDENED)
+
+if(HAVE_F_HARDENED)
+    add_compile_options(-fhardened)
+    if(HAVE_W_HARDENED)
+        add_compile_options(-Wno-hardened)
+    endif()
+else()
+    # Spell out what -fhardened would have enabled.
+    foreach(flag -fstack-protector-strong -fstack-clash-protection
+                 -fcf-protection=full -ftrivial-auto-var-init=zero)
+        string(MAKE_C_IDENTIFIER "HAVE${flag}" flag_var)
+        check_c_compiler_flag(${flag} ${flag_var})
+        if(${flag_var})
+            add_compile_options(${flag})
+        endif()
+    endforeach()
+    add_link_options(-Wl,-z,relro,-z,now,-z,noexecstack)
+endif()
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Fortify only where there's optimisation to fold the size checks.
+add_compile_options(
+    "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3>")
+
+add_compile_options(-fno-strict-aliasing)
 
 
 configure_file(
@@ -31,7 +73,9 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(CYAML REQUIRED libcyaml)
 
 add_library(proxy STATIC)
-target_include_directories(proxy PRIVATE inc external)
+target_include_directories(proxy PRIVATE inc)
+target_include_directories(proxy SYSTEM PRIVATE external)
+target_link_libraries(proxy PRIVATE warnings)
 target_sources(proxy
   PRIVATE
   src/config.c
@@ -51,7 +95,8 @@ target_sources(tlsproxy
   PRIVATE
   app/main.c
 )
-target_include_directories(tlsproxy PRIVATE inc external)
+target_include_directories(tlsproxy PRIVATE inc)
+target_include_directories(tlsproxy SYSTEM PRIVATE external)
 set_property(TARGET tlsproxy PROPERTY C_STANDARD 99)
 
 if (UNIT_TESTING)

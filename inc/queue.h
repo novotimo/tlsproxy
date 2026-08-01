@@ -83,7 +83,7 @@ tpx_err_t queue_peek_last(bufq_t *queue, unsigned char **buf, size_t *buflen);
 int queue_empty(bufq_t *queue);
 
 /** @brief Allocate a new empty queue */
-bufq_t *queue_new();
+bufq_t *queue_new(void);
 /** @brief Free the queue properly */
 void queue_free(bufq_t *queue);
 

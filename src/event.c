@@ -10,7 +10,7 @@ tpx_err_t dispatch_events(event_t *ev, int epollfd, uint32_t events) {
     ev = (event_t *)((uintptr_t)ev - tag);
     switch (ev->event_id) {
     case EV_LISTEN:
-        return handle_accept((listen_t *)ev, epollfd, events);
+        return handle_accept((listen_t *)ev, epollfd);
     case EV_PROXY:
         return handle_proxy((proxy_t *)ev, epollfd, events, tag);
     default:

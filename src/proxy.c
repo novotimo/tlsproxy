@@ -213,7 +213,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
     case PS_SERVER_CONNECTING:
-        if (0 == (tag & 1)) {
+        if ((tag & 1) == 0) {
             ret = proxy_handle_connect(proxy, 0);
             if (ret == TPX_AGAIN)
                 proxy->state = PS_SERVER_CONNECTING;
@@ -224,6 +224,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             return ret;
         }
         // If we're the server socket we keep going
+        __attribute__((fallthrough));
     case PS_READY:
         assert(events);
         if (0 != (events & EPOLLOUT))
@@ -268,22 +269,21 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     unsigned char *rdbuf = NULL;
     size_t buflen = 0;
 
-    bufq_t *in_bufq, *out_bufq;
+    bufq_t *in_bufq;
     int fd;
     if (is_client) {
         in_bufq = proxy->c2s;
-        out_bufq = proxy->s2c;
         // Not actually used, but makes things clearer
         fd = proxy->client_fd;
     } else {
         in_bufq = proxy->s2c;
-        out_bufq = proxy->c2s;
         fd = proxy->serv_fd;
     }
 
     // Invariants
     assert(in_bufq->write_idx < TPX_NET_BUFSIZE);
     assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
+    assert(buflen < INT_MAX && buflen > 0);
 
     if (in_bufq->write_idx == -1) {
         // Add new chunk
@@ -303,18 +303,18 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
             return TPX_FAILURE;
         case TPX_SUCCESS:
         default:
-            assert(in_bufq->write_idx < buflen);
+            assert(in_bufq->write_idx < (int)buflen);
         }
     }
 
     int nbytes = -1;
     if (proxy->ssl) ERR_clear_error();
-    while (buflen > in_bufq->write_idx &&
+    while ((int)buflen > in_bufq->write_idx &&
            ((nbytes = DO_READ(proxy->ssl, fd,
                               rdbuf + in_bufq->write_idx,
-                              buflen - in_bufq->write_idx)) > 0)) {
-        assert(buflen >= nbytes);
-        if (in_bufq->write_idx + nbytes == buflen) {
+                              (size_t)((int)buflen - in_bufq->write_idx))) > 0)) {
+        assert((int)buflen >= nbytes);
+        if (in_bufq->write_idx + nbytes == (int)buflen) {
             rdbuf = malloc(TPX_NET_BUFSIZE);
             buflen = TPX_NET_BUFSIZE;
             enqueue(in_bufq, rdbuf, buflen);
@@ -384,20 +384,21 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     unsigned char *wbuf = NULL;
     size_t wbuflen = 0;
 
-    bufq_t *in_bufq, *out_bufq;
+    bufq_t *out_bufq;
     int fd;
     if (is_client) {
-        in_bufq = proxy->c2s;
         out_bufq = proxy->s2c;
         // Not actually used, but makes things clearer
         fd = proxy->client_fd;
     } else {
-        in_bufq = proxy->s2c;
         out_bufq = proxy->c2s;
         fd = proxy->serv_fd;
     }
+
+    /* This is true as proxy_handle_write is only called after proxy_handle_read */
+    assert(out_bufq->write_idx > 0);
     
-    int nsent;
+    int nsent = 0;
     size_t real_buflen = 0;
     for (;;) {
         // Invariants
@@ -417,15 +418,15 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
             assert(wbuf);
             // Get only the part of the buf that's got data in it
             if (out_bufq->first == out_bufq->last)
-                real_buflen = out_bufq->write_idx;
+                real_buflen = (size_t)out_bufq->write_idx;
             else
                 real_buflen = wbuflen;
             
             if (proxy->ssl) ERR_clear_error();
-            while (real_buflen > out_bufq->read_idx &&
+            while ((int)real_buflen > out_bufq->read_idx &&
                    (nsent = DO_SEND(proxy->ssl, fd,
                                     wbuf + out_bufq->read_idx,
-                                    real_buflen - out_bufq->read_idx))
+                                    (size_t)((int)real_buflen - out_bufq->read_idx)))
                    > 0) {
                 out_bufq->read_idx += nsent;
             }
@@ -436,11 +437,11 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
             }
 
             // Are we done with this chunk?
-            if (out_bufq->read_idx == wbuflen) {
+            if (out_bufq->read_idx == (int)wbuflen) {
                 dequeue(out_bufq, NULL, NULL);
                 free(wbuf);
                 out_bufq->read_idx = 0;
-            } else if (out_bufq->read_idx == real_buflen) {
+            } else if (out_bufq->read_idx == (int)real_buflen) {
                 // This means wbuflen != real_buflen so we're at the
                 // end of the chunk currently being written
                 return TPX_SUCCESS;
@@ -477,7 +478,7 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     }
 }
 
-void proxy_init_timeouts() {
+void proxy_init_timeouts(void) {
     ngx_rbtree_init(&timeouts, &sentinel, &ngx_rbtree_insert_timer_value);
 }
 
@@ -486,7 +487,6 @@ tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd) {
 }
 
 tpx_err_t proxy_handle_ssl_failure(proxy_t *proxy, int retcode) {
-    int sslerr = SSL_get_error(proxy->ssl, retcode);
     switch(SSL_get_error(proxy->ssl, retcode)) {
     case SSL_ERROR_WANT_READ:
     case SSL_ERROR_WANT_WRITE:

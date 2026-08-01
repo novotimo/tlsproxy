@@ -109,7 +109,7 @@ tpx_err_t check_consistency(bufq_t *queue) {
     return TPX_SUCCESS;
 }
 
-bufq_t *queue_new() {
+bufq_t *queue_new(void) {
     bufq_t *q = calloc(1, sizeof(bufq_t));
     if (!q) {
         perror("queue_new: calloc");
