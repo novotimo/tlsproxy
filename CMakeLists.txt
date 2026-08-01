@@ -20,11 +20,44 @@ if (PROFILING)
 endif()
 
 
-# All of the warnings, and count them as errors
+include(CheckCCompilerFlag)
+
+# Warnings
 add_compile_options(-Wall -Wextra -Wshadow -Wsign-conversion -Wpointer-arith
-                    -Wstrict-prototypes -Wwrite-strings -Wno-hardened)
-# Security compile options
-add_compile_options(-fhardened -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fno-strict-aliasing)
+                    -Wstrict-prototypes -Wwrite-strings
+                    -Wimplicit-fallthrough=5 -Werror)
+
+# Hardening
+check_c_compiler_flag(-Whardened HAVE_W_HARDENED)
+check_c_compiler_flag(-fhardened HAVE_F_HARDENED)
+
+if(HAVE_F_HARDENED)
+    add_compile_options(-fhardened)
+    if(HAVE_W_HARDENED)
+        add_compile_options(-Wno-hardened)
+    endif()
+else()
+    # Spell out what -fhardened would have enabled.
+    foreach(flag -fstack-protector-strong -fstack-clash-protection
+                 -fcf-protection=full -ftrivial-auto-var-init=zero)
+        string(MAKE_C_IDENTIFIER "HAVE${flag}" flag_var)
+        check_c_compiler_flag(${flag} ${flag_var})
+        if(${flag_var})
+            add_compile_options(${flag})
+        endif()
+    endforeach()
+    add_link_options(-Wl,-z,relro,-z,now,-z,noexecstack)
+endif()
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Fortify only where there's optimisation to fold the size checks.
+add_compile_options(
+    "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3>")
+
+add_compile_options(-fno-strict-aliasing)
+
+
 
 configure_file(
   ${CMAKE_SOURCE_DIR}/inc/version.h.in
