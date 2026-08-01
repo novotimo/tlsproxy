@@ -8,7 +8,6 @@ list(APPEND TEST_LIBS OpenSSL::SSL)
 list(APPEND TEST_LIBS cmocka::cmocka)
 list(APPEND TEST_LIBS cyaml)
 list(APPEND TEST_LIBS proxy)
-list(APPEND TEST_LIBS warnings)
 
 list(APPEND TEST_TARGETS test_queue)
 list(APPEND TEST_FLAGS   "-Wl,--wrap=malloc -Wl,--wrap=calloc")
