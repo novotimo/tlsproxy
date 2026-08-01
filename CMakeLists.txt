@@ -23,9 +23,11 @@ endif()
 include(CheckCCompilerFlag)
 
 # Warnings
-add_compile_options(-Wall -Wextra -Wshadow -Wsign-conversion -Wpointer-arith
-                    -Wstrict-prototypes -Wwrite-strings
-                    -Wimplicit-fallthrough=5 -Werror)
+add_library(warnings INTERFACE)
+target_compile_options(warnings INTERFACE
+                       -Wall -Wextra -Wshadow -Wsign-conversion -Wpointer-arith
+                       -Wstrict-prototypes -Wwrite-strings
+                       -Wimplicit-fallthrough=5 -Werror)
 
 # Hardening
 check_c_compiler_flag(-Whardened HAVE_W_HARDENED)
@@ -58,7 +60,6 @@ add_compile_options(
 add_compile_options(-fno-strict-aliasing)
 
 
-
 configure_file(
   ${CMAKE_SOURCE_DIR}/inc/version.h.in
   ${CMAKE_SOURCE_DIR}/inc/version.h
@@ -74,6 +75,7 @@ pkg_check_modules(CYAML REQUIRED libcyaml)
 add_library(proxy STATIC)
 target_include_directories(proxy PRIVATE inc)
 target_include_directories(proxy SYSTEM PRIVATE external)
+target_link_libraries(proxy PRIVATE warnings)
 target_sources(proxy
   PRIVATE
   src/config.c
