@@ -61,10 +61,15 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx);
  * @param host The hostname or IP address of the local interface to
  *        bind to. This can be 0.0.0.0 or ::0 to bind to all addresses.
  * @param port The port to bind to.
+ * @param keepidle Seconds a connection may sit idle before the first keepalive
+ *        probe. Set on the listener because accept() inherits it.
+ * @param keepintvl Seconds between keepalive probes once they start.
+ * @param keepcnt Unanswered probes before the peer is declared dead.
  * @return The socket we've bound to. If no socket could be bound, just exit.
  */
 int bind_listen_sock(listen_t *listen, const char *host,
-                     const unsigned short port);
+                     const unsigned short port,
+                     int keepidle, int keepintvl, int keepcnt);
 
 /**
  * @brief Resolves a remote host into a struct sockaddr

@@ -22,7 +22,7 @@ list(APPEND TEST_FLAGS   "-Wl,--wrap=handle_accept -Wl,--wrap=handle_proxy -Wl,-
 list(APPEND TEST_COMP    " ")
 
 list(APPEND TEST_TARGETS test_proxy)
-list(APPEND TEST_FLAGS   "-Wl,--wrap=connect -Wl,--wrap=socket -Wl,--wrap=fcntl -Wl,--wrap=close -Wl,--wrap=malloc -Wl,--wrap=epoll_ctl -Wl,--wrap=SSL_free -Wl,--wrap=SSL_shutdown -Wl,--wrap=SSL_is_init_finished -Wl,--wrap=read -Wl,--wrap=SSL_read -Wl,--wrap=send -Wl,--wrap=SSL_write -Wl,--wrap=SSL_get_error -Wl,--wrap=queue_peek -Wl,--wrap=queue_peek_last -Wl,--wrap=ngx_rbtree_delete -Wl,--wrap=ngx_rbtree_insert -Wl,--wrap=log_proxy -Wl,--wrap=__assert_fail")
+list(APPEND TEST_FLAGS   "-Wl,--wrap=connect -Wl,--wrap=socket -Wl,--wrap=fcntl -Wl,--wrap=setsockopt -Wl,--wrap=close -Wl,--wrap=malloc -Wl,--wrap=epoll_ctl -Wl,--wrap=SSL_free -Wl,--wrap=SSL_shutdown -Wl,--wrap=SSL_is_init_finished -Wl,--wrap=read -Wl,--wrap=SSL_read -Wl,--wrap=send -Wl,--wrap=SSL_write -Wl,--wrap=SSL_get_error -Wl,--wrap=queue_peek -Wl,--wrap=queue_peek_last -Wl,--wrap=ngx_rbtree_delete -Wl,--wrap=ngx_rbtree_insert -Wl,--wrap=log_proxy -Wl,--wrap=__assert_fail")
 list(APPEND TEST_COMP    " ")
 
 list(APPEND TEST_TARGETS test_listen)

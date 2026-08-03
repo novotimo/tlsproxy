@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <sys/epoll.h>
@@ -25,12 +27,13 @@ static ngx_rbtree_node_t sentinel;
 uint32_t nproxies = 0;
 
 
-int create_connect(proxy_t *proxy);
+int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt);
 
 
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
-                      unsigned int conn_timeout) {
+                      unsigned int conn_timeout,
+                      int keepidle, int keepintvl, int keepcnt) {
     proxy_t *proxy = malloc(sizeof(proxy_t));
     if (!proxy) {
         log_system_err(LL_ERROR, "Couldn't allocate memory for proxy",
@@ -51,7 +54,8 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
 
     log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
 
-    if ((proxy->serv_fd = create_connect(proxy)) == -1) {
+    if ((proxy->serv_fd = create_connect(proxy,
+                                         keepidle, keepintvl, keepcnt)) == -1) {
         queue_free(proxy->c2s);
         queue_free(proxy->s2c);
 
@@ -83,7 +87,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
     return proxy;
 }
 
-int create_connect(proxy_t *proxy) {
+int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt) {
     assert(proxy);
     int conn_sock = socket(proxy->listener->peer_addr.ss_family, SOCK_STREAM,0);
     if (conn_sock < 0) {
@@ -106,6 +110,34 @@ int create_connect(proxy_t *proxy) {
         close(conn_sock);
         return -1;
     }
+
+    // It's *fine* if keepalive isn't set, we can still go. It just means that
+    // the default Linux kernel keepalive of 72 hours is used
+    int opt = 1;
+    if (setsockopt(conn_sock, SOL_SOCKET, SO_KEEPALIVE,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't enable keepalive on connect socket",
+                  strerror(errno));
+
+    opt = keepidle;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_KEEPIDLE,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set keepidle on connect socket", strerror(errno));
+
+    opt = keepintvl;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_KEEPINTVL,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set keepintvl on connect socket", strerror(errno));
+
+    opt = keepcnt;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_KEEPCNT,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set keepcnt on connect socket", strerror(errno));
+
     return conn_sock;
 }
 
@@ -170,8 +202,7 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
         proxy->timer_set = 0;
     }
 
-    if (proxy->state == PS_SERVER_DISCONNECTED && SSL_shutdown(proxy->ssl) == 0)
-        return TPX_AGAIN;
+    SSL_shutdown(proxy->ssl);
 
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:

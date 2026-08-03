@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -318,6 +319,14 @@ void __wrap_log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
 }
 
 
+/* Storage rather than a sentinel address, unlike FAKE_SSL. handle_accept()
+   copies accept()'s peer address into proxy->client_addr the moment
+   create_proxy() returns, so whatever a stubbed create_proxy() hands back is
+   written through before any test gets to look at it - the ((proxy_t *)0x10)
+   this used to be segfaulted there. Tests still only compare it by identity. */
+static proxy_t proxy_fixture;
+#define FAKE_PROXY (&proxy_fixture)
+
 static int reset_recorders(void **state) {
     (void)state;
     memset(&close_log, 0, sizeof(close_log));
@@ -325,6 +334,7 @@ static int reset_recorders(void **state) {
     memset(&create_proxy_log, 0, sizeof(create_proxy_log));
     memset(&add_to_epoll_log, 0, sizeof(add_to_epoll_log));
     memset(&proxy_close_log, 0, sizeof(proxy_close_log));
+    memset(&proxy_fixture, 0, sizeof(proxy_fixture));
     set_accept_peer("192.0.2.77", 51000);
     malloc_override = NULL;
     getaddrinfo_fails_for = NULL;
@@ -339,8 +349,8 @@ static listen_t listener_fixture;
 
 #define ACCEPTED_FD 40
 #define BACKEND_FD  60
-#define FAKE_PROXY  ((proxy_t *)0x10)
 #define FAKE_SSL    ((SSL *)0x20)
+// FAKE_PROXY is declared above reset_recorders, which has to clear it.
 
 static listen_t *make_listener(void) {
     memset(&conf_fixture, 0, sizeof(conf_fixture));
@@ -584,30 +594,30 @@ static void handle_accept_passes_peer_address_to_the_proxy(void **state) {
 /* bind_listen_sock()                                                  */
 /* ------------------------------------------------------------------ */
 
-/* setsockopt()'s third argument is an option name, not a flag word, and
-   src/listen.c passes SO_REUSEADDR | SO_REUSEPORT. On Linux that is 2 | 15,
-   which is 15, which is SO_REUSEPORT. The call returns 0, sets one option and
-   silently drops the other.
+/* One assertion per option, because these were once a single call passing
+   SO_REUSEADDR | SO_REUSEPORT. setsockopt()'s third argument is an option
+   name, not a flag word: on Linux that OR is 2 | 15, which is 15, which is
+   SO_REUSEPORT. It compiled, it returned 0, it set one option and silently
+   dropped the other, and it read exactly like every correct
+   OR-together-your-flags line in the tree (EPOLLIN | EPOLLOUT | EPOLLET two
+   files over) - setsockopt is the odd one out for not taking a mask. Adding
+   SO_KEEPALIVE to the same OR later changed nothing at all, which is what
+   makes a per-option test worth having rather than one that checks the call
+   happened.
 
-   Nothing catches this. It compiles, it is the same shape as every correct
-   OR-together-your-flags line in the file (EPOLLIN | EPOLLOUT | EPOLLET two
-   files over), and setsockopt is the odd one out for not taking a mask. The
-   header even documents both options as being set.
-
-   Severity, measured rather than assumed: I set up a real TIME_WAIT on a
-   loopback port and retried the bind three ways. With no reuse options the
-   bind fails with EADDRINUSE; with SO_REUSEPORT alone - what this code
-   actually produces - it succeeds. So the restart failure you would expect
-   from a missing SO_REUSEADDR does not currently happen, because SO_REUSEPORT
-   covers for it. This is latent, not live. It becomes live the moment anyone
-   drops SO_REUSEPORT, and at that point the line still reads as though
-   SO_REUSEADDR were set. */
+   Severity of the original, measured rather than assumed: with a real
+   TIME_WAIT set up on a loopback port, a bind with no reuse options fails
+   EADDRINUSE, and one with SO_REUSEPORT alone - what the OR actually produced
+   - succeeds. So the restart failure you would expect from a missing
+   SO_REUSEADDR never showed up, because SO_REUSEPORT covered for it. It was
+   latent, not live, and would have gone live the moment anyone dropped
+   SO_REUSEPORT. */
 static void bind_listen_sock_sets_reuseaddr(void **state) {
     (void)state;
     listen_t l;
     memset(&l, 0, sizeof(l));
 
-    int fd = bind_listen_sock(&l, "127.0.0.1", 0);
+    int fd = bind_listen_sock(&l, "127.0.0.1", 0, 60, 10, 3);
     assert_int_not_equal(fd, -1);
 
     int on = -1;
@@ -626,7 +636,7 @@ static void bind_listen_sock_sets_reuseport(void **state) {
     listen_t l;
     memset(&l, 0, sizeof(l));
 
-    int fd = bind_listen_sock(&l, "127.0.0.1", 0);
+    int fd = bind_listen_sock(&l, "127.0.0.1", 0, 60, 10, 3);
     assert_int_not_equal(fd, -1);
 
     int on = -1;
@@ -637,6 +647,44 @@ static void bind_listen_sock_sets_reuseport(void **state) {
     assert_int_equal(on, 1);
 }
 
+/* The third option that was folded into that OR, and the one with the most
+   riding on it. Linux copies SO_KEEPALIVE and the TCP_KEEP* values from the
+   listening socket onto everything accept() returns, so this call is what
+   decides whether a client that dies without sending FIN is ever noticed -
+   there is no idle timeout anywhere in this program, and an unnoticed dead
+   client holds a proxy_t, two descriptors and its slot in nproxies, which
+   blocks graceful shutdown.
+
+   The values are read back rather than taken from the recorder: passing the
+   arguments in the wrong order still gets all three set, and only the kernel's
+   answer distinguishes that from getting it right. */
+static void bind_listen_sock_sets_keepalive(void **state) {
+    (void)state;
+    listen_t l;
+    memset(&l, 0, sizeof(l));
+
+    int fd = bind_listen_sock(&l, "127.0.0.1", 0, 60, 10, 3);
+    assert_int_not_equal(fd, -1);
+
+    int on = -1, idle = -1, intvl = -1, cnt = -1;
+    socklen_t len = sizeof(on);
+    assert_int_equal(getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, &len), 0);
+    len = sizeof(idle);
+    assert_int_equal(getsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, &len), 0);
+    len = sizeof(intvl);
+    assert_int_equal(getsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, &len),
+                     0);
+    len = sizeof(cnt);
+    assert_int_equal(getsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, &len), 0);
+
+    close(fd);
+    assert_true(opt_was_set(SOL_SOCKET, SO_KEEPALIVE));
+    assert_int_equal(on, 1);
+    assert_int_equal(idle, 60);
+    assert_int_equal(intvl, 10);
+    assert_int_equal(cnt, 3);
+}
+
 /* Port 0 rather than a hardcoded port: the old suite bound 47239 and left a
    comment accepting defeat if anything else had it. The kernel will hand out a
    free ephemeral port every time, so there is nothing to lose a race with. */
@@ -645,7 +693,7 @@ static void bind_listen_sock_fills_in_the_listen_address(void **state) {
     listen_t l;
     memset(&l, 0, sizeof(l));
 
-    int fd = bind_listen_sock(&l, "127.0.0.1", 0);
+    int fd = bind_listen_sock(&l, "127.0.0.1", 0, 60, 10, 3);
     assert_int_not_equal(fd, -1);
 
     assert_int_equal(l.listen_addr.ss_family, AF_INET);
@@ -669,7 +717,7 @@ static void bind_listen_sock_is_fatal_when_the_host_wont_resolve(void **state) {
     memset(&l, 0, sizeof(l));
 
     getaddrinfo_fails_for = "no-such-host";
-    expect_assert_failure(bind_listen_sock(&l, "no-such-host", 0));
+    expect_assert_failure(bind_listen_sock(&l, "no-such-host", 0, 60, 10, 3));
 }
 
 
@@ -824,6 +872,8 @@ int main(void) {
         cmocka_unit_test_setup(bind_listen_sock_sets_reuseaddr,
                                reset_recorders),
         cmocka_unit_test_setup(bind_listen_sock_sets_reuseport,
+                               reset_recorders),
+        cmocka_unit_test_setup(bind_listen_sock_sets_keepalive,
                                reset_recorders),
         cmocka_unit_test_setup(bind_listen_sock_fills_in_the_listen_address,
                                reset_recorders),
