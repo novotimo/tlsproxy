@@ -201,8 +201,6 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                     logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
                 }
             }
-
-            logger->read_idx = r_idx;
             return i;
         }
 
