@@ -552,8 +552,8 @@ void log_listen(loglevel_t level, listen_t *listener) {
                                     port, strlen(port)));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_ip",
-                                    config->target_ip,
-                                    strlen(config->target_ip)));
+                                    config->listen_ip,
+                                    strlen(config->listen_ip)));
 
     snprintf(port, sizeof(port), "%hu", config->listen_port);
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_port",
