@@ -50,9 +50,10 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
 
     proxy->serv_fd = create_connect(proxy);
     tpx_err_t ret = proxy_handle_connect(proxy, conn_timeout);
-    if (ret == TPX_SUCCESS)
+    if (ret == TPX_SUCCESS) {
         proxy->state = PS_READY;
-    else if (ret == TPX_AGAIN)
+        log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
+    } else if (ret == TPX_AGAIN)
         proxy->state = PS_SERVER_CONNECTING;
     else {
         close(proxy->serv_fd);
@@ -66,8 +67,6 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
         
         proxy = NULL;
     }
-
-    log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
 
     nproxies++;
     return proxy;
