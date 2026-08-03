@@ -96,10 +96,20 @@ void usage(const char *pname) {
     exit(EXIT_FAILURE);
 }
 
+/**
+ * @brief Print fatal errors on startup, or during config reload
+ *
+ * If we're in startup, log a fatal error and terminate. If we're doing a
+ * reload, we can't afford to terminate, so just print an error. This should
+ * be run only on the master process.
+ */
 void _fatal(int logfd, const char *msg, int errtype) {
-    log_system_err_m(logfd, LL_FATAL, msg, errtype);
-    if (in_startup)
+    if (in_startup) {
+        log_system_err_m(logfd, LL_FATAL, msg, errtype);
         errx(EXIT_FAILURE, "%s", msg);
+    } else {
+        log_system_err_m(logfd, LL_ERROR, msg, errtype);
+    }
 }
 
 void _child_fatal(const char *msg, int errtype) {
@@ -563,13 +573,14 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     SSL_CTX_set_options(ctx, opts);
 
     if (config->cacerts != NULL) {
-        load_servcert(config, ctx, logfd);
-        load_cacerts(config, ctx, logfd);
+        if (load_servcert(config, ctx, logfd) == 0)
+            goto cleanup_fail;
+        if (load_cacerts(config, ctx, logfd))
+            goto cleanup_fail;
     } else if (config->cert_chain != NULL) {
         if (SSL_CTX_use_certificate_chain_file(ctx, config->cert_chain) != 1) {
-            SSL_CTX_free(ctx);
             _fatal(logfd, "Couldn't load cert chain", TPX_ERR_OSSL);
-            return NULL;
+            goto cleanup_fail;
         }
 
         STACK_OF(X509) *certs;
@@ -579,7 +590,7 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     } else {
         _fatal(logfd, "Config contains both cert-chain and cacerts",
                TPX_ERR_PLAIN);
-        return NULL;
+        goto cleanup_fail;
     }
 
     int flags = config->cacerts == NULL
@@ -588,17 +599,21 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
                     : 0;
 
     if (SSL_CTX_build_cert_chain(ctx, flags) != 1) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to build cert chain", TPX_ERR_OSSL);
-        return NULL;
+        goto cleanup_fail;
     }
 
-    load_servkey(config, ctx, logfd);
+    if (load_servkey(config, ctx, logfd) == 0)
+        goto cleanup_fail;
 
     // No mTLS
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
 
     return ctx;
+
+cleanup_fail:
+    SSL_CTX_free(ctx);
+    return NULL;
 }
 
 /** @brief Load the server certificate into the SSL_CTX */
@@ -608,7 +623,7 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     if (!PEM_read_bio_X509(leaf_bio, &leaf, NULL, NULL)) {
         BIO_free(leaf_bio);
         _fatal(logfd, "Failed to load server cert", TPX_ERR_OSSL);
-        return 1;
+        return 0;
     }
     BIO_free(leaf_bio);
     log_cert_load(logfd, LL_INFO, leaf, 0);
@@ -649,13 +664,11 @@ int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
                                              (void *)config->servkeypass);
     BIO_free(pkey_bio);
     if (pkey == NULL) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to read server key", TPX_ERR_OSSL);
         return 0;
     }
     
     if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to load server key into ctx", TPX_ERR_OSSL);
         return 0;
     }
@@ -729,8 +742,8 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
         // prove that it will be made without errors
         SSL_CTX *ssl_ctx = init_openssl(&new_config->listeners[i], new_logfd);
         if (!ssl_ctx) {
-            log_system_err_m(*logfd, LL_ERROR, "Couldn't reload config",
-                             TPX_ERR_OSSL);
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                               "Couldn't initialize OpenSSL");
             goto restore_shmem;
         }
         SSL_CTX_free(ssl_ctx);
