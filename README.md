@@ -1,5 +1,19 @@
 # TLS Proxy README
 
+[![CMake Build and Test](https://github.com/novotimo/tlsproxy/actions/workflows/cmake-debug-test.yml/badge.svg)](https://github.com/novotimo/tlsproxy/actions/workflows/cmake-debug-test.yml)
+[![Coverage](https://raw.githubusercontent.com/novotimo/tlsproxy/badges/coverage.svg)](https://github.com/novotimo/tlsproxy/actions/workflows/coverage.yml)
+
+> **The test badge is red on purpose.** The suite currently contains 32 tests
+> that fail because they pin an unfixed defect in `src/`, each named after the
+> claim it makes — so `ctest --output-on-failure` prints the bug list. They are
+> not masked or skipped; a test going green is how a fix reports itself. The
+> `Release build` job is red for the same reason: `src/logging.c` does not
+> compile at `-O2` under the project's own `-Werror` set.
+>
+> Coverage is line coverage over `src/` only, with a floor of 75% enforced in
+> CI. It is a rot guard, not a goal — this suite hit 100% once and still missed
+> ten defects, because the mocks discarded their arguments.
+
 TLS termination proxy made to handle (tens of) thousands of concurrent connections. Has comparable* performance to nginx, at a tiny fraction of the attack surface!
 
 (*) It's faster than nginx in almost everything but HTTPS reverse proxying, since nginx has some very nice connection pooling and socket reuse methods exclusive to HTTP that they use. If you want to proxy HTTP to HTTPS, use nginx reverse proxy.

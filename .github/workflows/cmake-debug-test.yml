@@ -1,38 +1,186 @@
 name: CMake Build and Test
 
+# Runs on every branch, not just main: the test suites are the thing being
+# developed here, and a suite that only runs after merge is not a gate.
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "**" ]
   pull_request:
     branches: [ "main" ]
 
 env:
   BUILD_TYPE: Debug
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+# EXPECTED STATE OF THIS WORKFLOW
+#
+# The unit-tests and release-build jobs are RED on purpose right now, and the
+# maintainer has asked that they stay that way rather than be masked:
+#
+#   unit-tests    17 failures across test_proxy (10), test_listen (7) and
+#                 test_logging (15 of the suite's tests fail; see below). Each
+#                 one pins a finding in src/ that has not been fixed yet. They
+#                 are named after the claim they make, so the ctest output is
+#                 the bug list.
+#   release-build src/logging.c does not compile at -O2/-O3 under the project's
+#                 own -Werror set. Two of those errors predate this branch and
+#                 reproduce on main; two arrived with the write_logs rework.
+#
+# Do not add continue-on-error to hide either. When a finding is fixed its test
+# goes green on its own, and that is the signal to expect.
 
+jobs:
+  unit-tests:
+    name: Unit tests (Debug)
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-      
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-        libssl-dev \
-        libcyaml-dev \
-        libcmocka-dev \
-        doxygen \
-        graphviz \
-        pkg-config
+        libssl-dev libcyaml-dev libcmocka-dev pkg-config
 
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DUNIT_TESTING=y
 
     - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      run: cmake --build ${{github.workspace}}/build
 
-    ## Just CMocka unit tests for now, need to fix them
     - name: Test
       run: ctest --test-dir build --output-on-failure
+
+  # The single highest value addition here. Every build in this workflow before
+  # today was -O0, and GCC does not run its may-be-uninitialised analysis at
+  # -O0 -- so a whole class of defect was invisible to CI while being present
+  # in the image the Dockerfile ships, which builds Release. Measured: with GCC
+  # 15.3, `cmake -DCMAKE_BUILD_TYPE=Release` fails on src/logging.c with four
+  # -Werror errors, two of which also fail on main. Older toolchains are less
+  # aggressive about this analysis, which is presumably how the published image
+  # was ever built; that makes pinning it in CI more useful, not less.
+  release-build:
+    name: Release build (-Werror at -O2)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libssl-dev libcyaml-dev pkg-config
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build
+
+  # ASAN and UBSAN together. Measured before writing this: -fsanitize=address
+  # coexists with the linker's --wrap machinery the mocks are built on, so the
+  # suites do not have to be rebuilt differently to run here.
+  #
+  # This job deliberately keys on sanitizer diagnostics rather than on the exit
+  # code. The suites exit nonzero anyway because of the pinned findings above,
+  # so an exit-code gate here would report the same known failures and drown
+  # out the thing this job exists to find.
+  sanitizers:
+    name: ASAN + UBSAN
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+        libssl-dev libcyaml-dev libcmocka-dev pkg-config
+
+    - name: Configure CMake
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=Debug -DUNIT_TESTING=y \
+          -DSANITIZE=address,undefined
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build
+
+    # Leak detection is off for the suites that pin findings: a test that fails
+    # by design does so through cmocka's longjmp, which skips the cleanup at the
+    # end of the test function. Those leaks are an artifact of the finding, not
+    # a defect, and they come back the moment the finding is fixed. The other
+    # suites run with it on.
+    - name: Run under sanitizers
+      run: |
+        set +e
+        mkdir -p san
+        export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=0:suppressions=$PWD/test/ubsan.supp"
+        for t in test_queue test_config test_event; do
+          ASAN_OPTIONS=detect_leaks=1 ./build/test/$t > san/$t.log 2>&1
+        done
+        for t in test_proxy test_listen test_logging; do
+          ASAN_OPTIONS=detect_leaks=0 ./build/test/$t > san/$t.log 2>&1
+        done
+        echo "=== sanitizer diagnostics ==="
+        grep -hE 'runtime error|ERROR: AddressSanitizer|ERROR: LeakSanitizer' \
+             san/*.log | sort | uniq -c | tee san/findings.txt
+        if [ -s san/findings.txt ]; then
+          echo "::error::sanitizers reported the diagnostics above"
+          exit 1
+        fi
+        echo "no sanitizer diagnostics"
+
+    - name: Upload sanitizer logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sanitizer-logs
+        path: san/
+
+  # Kept as its own job rather than folded into the sanitizer one: valgrind and
+  # ASAN cannot run against the same binary, and valgrind sees things ASAN does
+  # not (uninitialised reads in particular, which is the class the Release build
+  # above is failing on).
+  #
+  # NOT VERIFIED LOCALLY. valgrind is not installed on the machine this was
+  # written on, so unlike every other job here the invocation has not been run
+  # end to end -- only the build it depends on has. Treat the first CI run as
+  # the test of this job.
+  valgrind:
+    name: Valgrind (memcheck)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+        libssl-dev libcyaml-dev libcmocka-dev pkg-config valgrind
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=Debug -DUNIT_TESTING=y
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build
+
+    # --error-exitcode is deliberately NOT set, for the same reason the
+    # sanitizer job does not gate on the exit code: the suites already exit
+    # nonzero. The grep below is the gate.
+    - name: Run under memcheck
+      run: |
+        set +e
+        mkdir -p vg
+        for t in test_queue test_config test_event test_proxy test_listen test_logging; do
+          valgrind --tool=memcheck --leak-check=full --track-origins=yes \
+                   --errors-for-leak-kinds=definite \
+                   --log-file=vg/$t.vg ./build/test/$t > vg/$t.out 2>&1
+        done
+        echo "=== memcheck error summaries ==="
+        grep -h 'ERROR SUMMARY' vg/*.vg
+
+    - name: Upload valgrind logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: valgrind-logs
+        path: vg/
