@@ -332,7 +332,7 @@ void parent_loop(tpx_config_t **config_,
                 count -= write_logs(logfd, &g_shmem->logger, count);
 
                 // If we couldn't write all the logs, re-emit the events so we can try again
-                if (count > 0 && write(efd, (void *)count, sizeof(count)) != sizeof(count)) {
+                if (count > 0 && write(efd, (void *)&count, sizeof(count)) != sizeof(count)) {
                     // This means we have a log desync, we can't really do anything but quit
                     err(EXIT_FAILURE, "Couldn't write log events to eventfd");
                 }
