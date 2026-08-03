@@ -6,6 +6,7 @@
 #include <setjmp.h>
 #include <cmocka.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <stdint.h>
@@ -73,19 +74,37 @@ extern uint32_t nproxies;
 WRAPPED_FUNCS
 #undef WRAP_FUN
 
-// Need to handle varargs separately
+/* Varargs have to be handled by hand, and the obvious version is wrong. This
+   file used to do
+
+       va_list args; va_start(args, op);
+       __real_fcntl(fd, op, args);
+
+   which hands fcntl the va_list object where it wants an int, so a passed
+   through F_SETFL would set flags from a pointer value. It never bit because
+   every test here mocks fcntl, but the fallback was broken and anything added
+   later that relied on it would have failed in a way that pointed at fcntl
+   rather than at the harness. F_GETFL and friends take no third argument at
+   all, so the only correct version splits on the op. Same shape as the one in
+   test_listen.c; keep the two in step. */
 int __real_fcntl(int fd, int op, ...);
 int __wrap_fcntl(int fd, int op, ...);
 int __wrap_fcntl(int fd, int op, ...) {
     if (has_mock())
-        return (int) mock();
-    else {
+        return (int)mock();
+
+    switch (op) {
+    case F_GETFL:
+    case F_GETFD:
+    case F_GETOWN:
+        return __real_fcntl(fd, op);
+    default: {
         va_list args;
         va_start(args, op);
-
-        int res = __real_fcntl(fd, op, args);
+        int arg = va_arg(args, int);
         va_end(args);
-        return res;
+        return __real_fcntl(fd, op, arg);
+    }
     }
 }
 
