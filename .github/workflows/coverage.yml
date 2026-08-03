@@ -1,0 +1,90 @@
+name: Coverage
+
+# push only, no pull_request: running both fired this twice on any branch with
+# an open PR. Same reasoning as cmake-debug-test.yml.
+on:
+  push:
+    branches: [ "**" ]
+
+# The floor exists to stop coverage silently rotting back to where it was --
+# three of five suites commented out and 12 tests running -- not as a target to
+# chase. CLAUDE.md is explicit that coverage is not the goal: the suite hit 100%
+# in Dec 2025 and still missed ten defects, because the mocks discarded their
+# arguments. Treat a drop as "which test stopped running", not "write a test
+# for the uncovered line".
+#
+# 75 is set just under the measured 77% line coverage over src/ so it ratchets
+# without being red on arrival. Measured with gcovr 8.6, GCC 15.3, all six
+# suites run, pinned failures included -- those abort early through cmocka's
+# longjmp, so they contribute less coverage than they will once fixed.
+env:
+  COVERAGE_FLOOR: 75
+
+jobs:
+  coverage:
+    name: Line coverage over src/
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+        libssl-dev libcyaml-dev libcmocka-dev pkg-config
+        pip install --user gcovr==8.6
+
+    - name: Configure CMake
+      run: |
+        cmake -B ${{github.workspace}}/build \
+          -DCMAKE_BUILD_TYPE=Debug -DUNIT_TESTING=y -DCOVERAGE=y
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build
+
+    # ctest exits nonzero because of the pinned findings; that is expected and
+    # is gated by the unit-tests job in the other workflow, not here. What this
+    # job needs is for every suite to have RUN, so the counters are populated.
+    - name: Run tests
+      run: ctest --test-dir build || true
+
+    # --filter src/ so the measurement is of the code under test. The test
+    # files themselves, external/ and app/main.c are excluded: main.c has no
+    # unit tests at all by design, and including it would make the floor a
+    # statement about a file nothing here exercises.
+    - name: Report coverage
+      run: |
+        gcovr --root . --gcov-object-directory build \
+              --filter 'src/' --exclude 'external/' \
+              --txt --json-summary coverage.json \
+              --html-details coverage.html \
+              --fail-under-line ${{env.COVERAGE_FLOOR}}
+
+    - name: Render badge
+      if: success()
+      run: python3 .github/scripts/coverage_badge.py coverage.json badge/coverage.svg
+
+    - name: Upload HTML report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: |
+          coverage.html
+          coverage.*.html
+          coverage.json
+
+    # Publishes to an orphan `badges` branch using the built-in GITHUB_TOKEN --
+    # no account to sign up for and no secret to create. README points at
+    # raw.githubusercontent.com/novotimo/tlsproxy/badges/coverage.svg.
+    # Only from main: a PR from a fork has a read-only token, and a branch
+    # build should not move the badge the README shows.
+    - name: Publish badge
+      if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_branch: badges
+        publish_dir: ./badge
+        keep_files: true
+        commit_message: "coverage badge for ${{ github.sha }}"

@@ -9,9 +9,27 @@ else()
   add_compile_options(-O2)
 endif()
 
+# SANITIZE=address,undefined (or any -fsanitize list). Not -static-libasan:
+# the test binaries link cmocka as a shared library, and mixing a static ASAN
+# runtime with a shared library that also allocates puts the runtime's
+# interceptors in the wrong order. Dynamic was measured working against the
+# --wrap based mocks; static was not.
+if (SANITIZE)
+  add_compile_options(-fsanitize=${SANITIZE} -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=${SANITIZE})
+endif()
+
+# Kept for compatibility with the previous spelling.
 if (ASAN)
-  add_compile_options(-fsanitize=address)
-  add_link_options(-fsanitize=address -static-libasan)
+  add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address)
+endif()
+
+# --coverage on the library under test only; the test binaries themselves are
+# not what we are measuring.
+if (COVERAGE)
+  add_compile_options(--coverage -fprofile-update=atomic)
+  add_link_options(--coverage)
 endif()
 
 if (PROFILING)
@@ -53,9 +71,18 @@ endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Fortify only where there's optimisation to fold the size checks.
-add_compile_options(
-    "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3>")
+# Fortify only where there's optimisation to fold the size checks into.
+#
+# This used to key on the config name alone, which was wrong in a way that made
+# a fresh clone fail at the obvious first command: UNIT_TESTING forces -O0, and
+# _FORTIFY_SOURCE at -O0 makes glibc emit a #warning, which -Werror turns into a
+# build failure. So `cmake -B build -DUNIT_TESTING=y` with no CMAKE_BUILD_TYPE
+# did not build, and CI only stayed green because it passes Debug explicitly.
+# Key on the thing that actually matters instead: whether we are optimising.
+if (NOT UNIT_TESTING)
+  add_compile_options(
+      "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3>")
+endif()
 
 add_compile_options(-fno-strict-aliasing)
 
@@ -76,6 +103,18 @@ add_library(proxy STATIC)
 target_include_directories(proxy PRIVATE inc)
 target_include_directories(proxy SYSTEM PRIVATE external)
 target_link_libraries(proxy PRIVATE warnings)
+
+# proxy is a static archive, so its own dependencies have to be declared here
+# rather than left to each consumer to list. Consumers were listing OpenSSL and
+# cyaml *before* proxy on their link lines, which only worked because the linker
+# was not dropping unused shared libraries. Under -Wl,--as-needed -- the default
+# on Ubuntu, which is what CI runs -- nothing needs libssl at the point it is
+# scanned, so it is discarded, and libproxy.a(logging.c.o) is then left with
+# undefined references to SSL_get_current_cipher and SSL_CIPHER_get_name.
+# Declaring the dependency PUBLIC makes CMake emit these after libproxy.a for
+# every consumer, which is the order the linker actually needs.
+target_link_libraries(proxy PUBLIC OpenSSL::SSL OpenSSL::Crypto cyaml)
+
 target_sources(proxy
   PRIVATE
   src/config.c

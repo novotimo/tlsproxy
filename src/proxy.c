@@ -210,10 +210,11 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
 tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                        uint8_t tag) {
     tpx_err_t ret = TPX_SUCCESS;
+    int is_client = tag & 1;
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
     case PS_SERVER_CONNECTING:
-        if ((tag & 1) == 0) {
+        if (!is_client) {
             ret = proxy_handle_connect(proxy, 0);
             if (ret == TPX_AGAIN)
                 proxy->state = PS_SERVER_CONNECTING;
@@ -228,10 +229,10 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
     case PS_READY:
         assert(events);
         if (0 != (events & EPOLLOUT))
-            ret = proxy_handle_write(proxy, tag);
+            ret = proxy_handle_write(proxy, is_client);
 
         if (ret != TPX_SUCCESS) {
-            if (0 != (tag & 1))
+            if (is_client)
                 proxy->state = PS_CLIENT_DISCONNECTED;
             else
                 proxy->state = PS_SERVER_DISCONNECTED;
@@ -239,10 +240,10 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         }
     
         if (0 != (events & EPOLLIN))
-            ret = proxy_handle_read(proxy, tag);
+            ret = proxy_handle_read(proxy, is_client);
         
         if (ret != TPX_SUCCESS) {
-            if (0 != (tag & 1))
+            if (is_client)
                 proxy->state = PS_CLIENT_DISCONNECTED;
             else
                 proxy->state = PS_SERVER_DISCONNECTED;

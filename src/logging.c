@@ -262,14 +262,12 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
                                     state, strlen(state)));
     
     static char intstr[12];
-    assert(sizeof(intstr) < INT_MAX);
-    assert(snprintf(intstr, sizeof(intstr), "%d", worker_pid) < (int)sizeof(intstr));
+    snprintf(intstr, sizeof(intstr), "%d", worker_pid);
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_pid", intstr,
                                     strlen(intstr)));
 
     if (wstatus != -1 && WIFSIGNALED(wstatus)) {
-        assert(snprintf(intstr, sizeof(intstr), "%d", WTERMSIG(wstatus))
-               < (int)sizeof(intstr));
+        snprintf(intstr, sizeof(intstr), "%d", WTERMSIG(wstatus));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "signal",
                                         sizeof("signal")-1));
@@ -277,8 +275,7 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " code", intstr,
                                         strlen(intstr)));
     } else if (wstatus != -1 && WIFEXITED(wstatus)) {
-        assert(snprintf(intstr, sizeof(intstr), "%d", WEXITSTATUS(wstatus))
-               < (int)sizeof(intstr));
+        snprintf(intstr, sizeof(intstr), "%d", WEXITSTATUS(wstatus));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "exited",
                                         sizeof("signal")-1));
@@ -688,13 +685,16 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                     int mode) {
     assert(linebuf->u.len < TPX_LOG_LINE_MAX);
 
-    int (*transform)(const char, char **, const char*);
+    int (*transform)(const char, char **, const char*) = NULL;
     if (mode == TPX_MODE_SANITIZE)
         transform = _sanitize_c;
     else if (mode == TPX_MODE_HEX)
         transform = _hex_c;
 
     if (mode != TPX_MODE_NONE) {
+        // Needs to be changed if we add any more modes
+        assert(transform != NULL);
+
         char *sanitized = linebuf->u.buf;
         // endptrs point to the null terminator
         const char *str_endptr = str+len;
