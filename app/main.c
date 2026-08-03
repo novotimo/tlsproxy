@@ -738,7 +738,7 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     // Now we're fully convinced our new config is good
     size_t old_workers = (*config)->nworkers;
-    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)config, 0);
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)*config, 0);
     close(*logfd);
 
     *config = new_config;
