@@ -194,7 +194,7 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                     char b[LINEBUF_OFFSET];
                     uint32_t i;
                 } u;
-                u.i = linelen;
+                u.i = linelen + LINEBUF_OFFSET;
                 for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
                     DEC_WRAP(r_idx);
                     logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
