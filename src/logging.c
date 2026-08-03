@@ -230,7 +230,7 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
 
     GUARD_APPEND(_base_schema(&linebuf, 1, level, STARTUP_EVENT))
 
-    GUARD_APPEND(_linebuf_append(&linebuf, " argv=\"", sizeof("argv=\"")-1,
+    GUARD_APPEND(_linebuf_append(&linebuf, " argv=\"", sizeof(" argv=\"")-1,
                      TPX_MODE_NONE));
 
     for (int i=1; i<argc; ++i) {
