@@ -45,6 +45,9 @@ shared_t *g_shmem;
 #define INC_WRAP(IDX) \
     (IDX + 1 >= TPX_LOGBUF_SIZE) ? IDX = 0 : IDX++
 
+#define DEC_WRAP(IDX) \
+    (IDX == 0) ? IDX = TPX_LOGBUF_SIZE - 1 : IDX--
+
 #define GUARD_APPEND(CALL)                                              \
     if (CALL == -1) {                                                   \
         fprintf(stderr, "Error writing log message (%s:%d): buffer is full\n", \
@@ -108,7 +111,7 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
     for (size_t i=0; i<evt_count; ++i) {
         // Make sure our write index doesn't change during loop
         uint64_t w_idx = logger->write_idx;
-        int wrapped = w_idx < logger->read_idx;
+        int will_wrap = w_idx < logger->read_idx;
         
         // Invariants
         assert(logger->read_idx < TPX_LOGBUF_SIZE);
@@ -138,32 +141,59 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         assert(linelen > LINEBUF_OFFSET && linelen < TPX_LOG_LINE_MAX);
         linelen -= LINEBUF_OFFSET;
         len_to_end -= LINEBUF_OFFSET;
-        
-        ssize_t nwritten = write(logfd, &logger->log_buf[logger->read_idx],
-                                MIN(len_to_end,linelen));
+
+        size_t ntowrite = MIN(len_to_end, linelen);
+        ssize_t nwritten;
+
+        while (ntowrite > 0 &&
+               ((nwritten = write(logfd, &logger->log_buf[logger->read_idx],
+                                  ntowrite)) > 0 || errno == EINTR)) {
+            // Invariants
+            assert(errno == EINTR || nwritten >= 0);
+            assert(errno == EINTR || (size_t)nwritten <= ntowrite);
+
+            if (errno == EINTR)
+                continue;
+
+            logger->read_idx += nwritten;
+            if (logger->read_idx >= TPX_LOGBUF_SIZE)
+                logger->read_idx = 0;
+
+            // `ntowrite` is the amount we want to write with the current write call
+            ntowrite -= (size_t)nwritten;
+            // `linelen` is the total size of the line
+            linelen  -= (size_t)nwritten;
+
+            if (will_wrap) {
+                len_to_end -= (size_t)nwritten;
+
+                if (len_to_end == 0) {
+                    ntowrite = linelen;
+                    will_wrap = 0;
+                }
+            }
+
+            // Invariants
+            assert(nwritten >= 0);
+        }
+
         if (nwritten == -1) {
             // We don't want to crash here
             perror("Writing log failed");
-            return;
-        }
 
-        logger->read_idx += nwritten;
-        if (logger->read_idx >= TPX_LOGBUF_SIZE)
-            logger->read_idx = 0;
-
-        // If we need to wrap around
-        if (wrapped && (size_t)nwritten == len_to_end && linelen > len_to_end) {
-            size_t remaining = linelen - len_to_end;
-            
-            assert(logger->read_idx == 0);
-            
-            nwritten = write(logfd, &logger->log_buf[logger->read_idx],
-                remaining);
-            if (nwritten == -1) {
-                perror("Writing log failed");
-                return;
+            // There's guaranteed to be this much room in the ring buffer, as we
+            // got at least LINEBUF_OFFSET bytes when grabbing the length
+            if (linelen > 0) {
+                union {
+                    char b[LINEBUF_OFFSET];
+                    uint32_t i;
+                } u;
+                for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
+                    DEC_WRAP(logger->read_idx);
+                    logger->log_buf[logger->read_idx] = u.b[LINEBUF_OFFSET-j-1];
+                }
             }
-            logger->read_idx = remaining;
+            return;
         }
         
         // Skip the null byte
