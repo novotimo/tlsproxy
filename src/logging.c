@@ -143,7 +143,7 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         len_to_end -= LINEBUF_OFFSET;
 
         size_t ntowrite = MIN(len_to_end, linelen);
-        ssize_t nwritten;
+        ssize_t nwritten = 0;
         errno = 0;
 
         while (ntowrite > 0 &&
