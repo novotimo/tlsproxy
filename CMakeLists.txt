@@ -103,6 +103,18 @@ add_library(proxy STATIC)
 target_include_directories(proxy PRIVATE inc)
 target_include_directories(proxy SYSTEM PRIVATE external)
 target_link_libraries(proxy PRIVATE warnings)
+
+# proxy is a static archive, so its own dependencies have to be declared here
+# rather than left to each consumer to list. Consumers were listing OpenSSL and
+# cyaml *before* proxy on their link lines, which only worked because the linker
+# was not dropping unused shared libraries. Under -Wl,--as-needed -- the default
+# on Ubuntu, which is what CI runs -- nothing needs libssl at the point it is
+# scanned, so it is discarded, and libproxy.a(logging.c.o) is then left with
+# undefined references to SSL_get_current_cipher and SSL_CIPHER_get_name.
+# Declaring the dependency PUBLIC makes CMake emit these after libproxy.a for
+# every consumer, which is the order the linker actually needs.
+target_link_libraries(proxy PUBLIC OpenSSL::SSL OpenSSL::Crypto cyaml)
+
 target_sources(proxy
   PRIVATE
   src/config.c

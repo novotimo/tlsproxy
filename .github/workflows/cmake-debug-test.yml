@@ -13,20 +13,22 @@ env:
 
 # EXPECTED STATE OF THIS WORKFLOW
 #
-# The unit-tests and release-build jobs are RED on purpose right now, and the
-# maintainer has asked that they stay that way rather than be masked:
+# The unit-tests job is RED on purpose right now, and the maintainer has asked
+# that it stay that way rather than be masked:
 #
-#   unit-tests    17 failures across test_proxy (10), test_listen (7) and
-#                 test_logging (15 of the suite's tests fail; see below). Each
-#                 one pins a finding in src/ that has not been fixed yet. They
-#                 are named after the claim they make, so the ctest output is
-#                 the bug list.
-#   release-build src/logging.c does not compile at -O2/-O3 under the project's
-#                 own -Werror set. Two of those errors predate this branch and
-#                 reproduce on main; two arrived with the write_logs rework.
+#   unit-tests    29 failures out of 146 tests -- 10 of 38 in test_proxy, 7 of
+#                 20 in test_listen, 12 of 67 in test_logging. Each one pins a
+#                 finding in src/ that has not been fixed yet. They are named
+#                 after the claim they make, so the ctest output is the bug
+#                 list.
 #
-# Do not add continue-on-error to hide either. When a finding is fixed its test
-# goes green on its own, and that is the signal to expect.
+# Every other job here is expected GREEN, release-build included -- see the
+# note on that job for what it caught while it was red.
+#
+# Do not add continue-on-error to the unit-tests job. When a finding is fixed
+# its test goes green on its own, and that is the signal to expect. Keep the
+# counts above in step with reality; a stale number here reads as a regression
+# that never happened.
 
 jobs:
   unit-tests:
@@ -51,13 +53,36 @@ jobs:
       run: ctest --test-dir build --output-on-failure
 
   # The single highest value addition here. Every build in this workflow before
-  # today was -O0, and GCC does not run its may-be-uninitialised analysis at
-  # -O0 -- so a whole class of defect was invisible to CI while being present
-  # in the image the Dockerfile ships, which builds Release. Measured: with GCC
-  # 15.3, `cmake -DCMAKE_BUILD_TYPE=Release` fails on src/logging.c with four
-  # -Werror errors, two of which also fail on main. Older toolchains are less
-  # aggressive about this analysis, which is presumably how the published image
-  # was ever built; that makes pinning it in CI more useful, not less.
+  # it was -O0, and GCC does not run its may-be-uninitialised analysis at -O0 --
+  # so a whole class of defect was invisible to CI while being present in the
+  # image the Dockerfile ships, which builds Release.
+  #
+  # It paid for itself on the first run. With GCC 15.3 it failed on
+  # src/logging.c with two -Werror errors; both also reproduced on main, so
+  # neither came from the write_logs rework:
+  #
+  #   unused parameter 'worker_pid'   log_worker filled its output buffer from
+  #                                   inside assert(snprintf(...)). NDEBUG
+  #                                   deleted the snprintf along with the
+  #                                   assert, so the shipped Release image
+  #                                   logged worker_pid="" and code="" -- the
+  #                                   parameter genuinely was unused there.
+  #                                   The asserts are gone now; intstr is sized
+  #                                   so truncation cannot happen anyway.
+  #   'transform' may be used         _linebuf_append left its function pointer
+  #   uninitialized                   indeterminate for any mode outside the
+  #                                   three TPX_MODE_* constants. Latent: no
+  #                                   caller passes one. It is initialised to
+  #                                   NULL and the call is guarded now.
+  #
+  # Note what that first one means for the job's scope: it is not only a
+  # warnings gate, it is the only build here compiled with NDEBUG. Anything the
+  # project does inside an assert() gets exercised, or rather not exercised,
+  # exclusively by this job.
+  #
+  # Older toolchains are less aggressive about the uninitialised analysis,
+  # which is presumably how the published image was ever built; that makes
+  # keeping this job more useful, not less. Expected GREEN from here on.
   release-build:
     name: Release build (-Werror at -O2)
     runs-on: ubuntu-latest
@@ -138,8 +163,10 @@ jobs:
 
   # Kept as its own job rather than folded into the sanitizer one: valgrind and
   # ASAN cannot run against the same binary, and valgrind sees things ASAN does
-  # not (uninitialised reads in particular, which is the class the Release build
-  # above is failing on).
+  # not -- uninitialised reads in particular. That is the same class the
+  # release-build job gates, but the two are complementary rather than
+  # redundant: GCC only reports what it can prove statically, and memcheck only
+  # reports what the suites actually execute.
   #
   # NOT VERIFIED LOCALLY. valgrind is not installed on the machine this was
   # written on, so unlike every other job here the invocation has not been run
