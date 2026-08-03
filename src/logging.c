@@ -698,6 +698,8 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
         linebuf->u.len = sanptr - sanitized;
         if (filled) return -1;
     } else {
+        if (linebuf->u.len + len > TPX_LOG_LINE_MAX) return -1;
+
         memcpy(linebuf->u.buf + linebuf->u.len, str, len);
         linebuf->u.len += len;
     }
