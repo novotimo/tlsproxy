@@ -17,7 +17,7 @@
 #define TPX_ERR_ERRNO 1
 #define TPX_ERR_OSSL  2
 
-#define TPX_WORKER_DEAD 1
+#define TPX_WORKER_DEAD 0
 #define TPX_WORKER_ALIVE 1
 
 

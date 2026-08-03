@@ -201,8 +201,6 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                     logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
                 }
             }
-
-            logger->read_idx = r_idx;
             return i;
         }
 
@@ -225,12 +223,15 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 }
 
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
     GUARD_APPEND(_base_schema(&linebuf, 1, level, STARTUP_EVENT))
 
-    GUARD_APPEND(_linebuf_append(&linebuf, " argv=\"", sizeof("argv=\"")-1,
+    GUARD_APPEND(_linebuf_append(&linebuf, " argv=\"", sizeof(" argv=\"")-1,
                      TPX_MODE_NONE));
 
     for (int i=1; i<argc; ++i) {
@@ -249,6 +250,9 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
 
 void log_worker(int logfd, loglevel_t level, int worker_state,
                 pid_t worker_pid, int wstatus) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -257,7 +261,7 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
     static char dead[] = "dead";
     static char alive[] = "alive";
     
-    char *state = worker_state ? alive : dead;
+    char *state = worker_state == TPX_WORKER_ALIVE ? alive : dead;
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_state",
                                     state, strlen(state)));
     
@@ -278,7 +282,7 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
         snprintf(intstr, sizeof(intstr), "%d", WEXITSTATUS(wstatus));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "exited",
-                                        sizeof("signal")-1));
+                                        sizeof("exited")-1));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " code", intstr,
                                         strlen(intstr)));
@@ -288,14 +292,17 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
 }
 
 void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
     
     GUARD_APPEND(_base_schema(&linebuf, 1, level, CONFIG_LOAD_EVENT));
 
     // Integers need up to 12 characters
-    static char nworkers[9+12];
-    snprintf(nworkers, sizeof(nworkers), " nworkers=%d", config->nworkers);
+    static char nworkers[sizeof(" nworkers=")+12];
+    snprintf(nworkers, sizeof(nworkers), " nworkers=%u", config->nworkers);
     GUARD_APPEND(_linebuf_append(&linebuf, nworkers, strlen(nworkers),
                                  TPX_MODE_NONE));
 
@@ -303,6 +310,9 @@ void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config) {
 }
 
 void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
     
@@ -372,14 +382,24 @@ void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client) {
 
     X509_NAME *name = X509_get_subject_name(cert);
     char *subjname = X509_NAME_oneline(name, NULL, 0);
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " cert_subject",
-                                    subjname, strlen(subjname)));
+    if (_linebuf_append_kv(&linebuf, " cert_subject",
+                           subjname, strlen(subjname)) == -1) {
+        CRYPTO_free(subjname, __FILE__, __LINE__);
+        fprintf(stderr, "Error writing log message (%s:%d): buffer is full\n",
+                __func__, __LINE__);
+        return;
+    }
     CRYPTO_free(subjname, __FILE__, __LINE__);
 
     name = X509_get_issuer_name(cert);
     char *issuername = X509_NAME_oneline(name, NULL, 0);
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " cert_issuer",
-                                    issuername, strlen(issuername)));
+    if (_linebuf_append_kv(&linebuf, " cert_issuer",
+                           issuername, strlen(issuername)) == -1) {
+        CRYPTO_free(issuername, __FILE__, __LINE__);
+        fprintf(stderr, "Error writing log message (%s:%d): buffer is full\n",
+                __func__, __LINE__);
+        return;
+    }
     CRYPTO_free(issuername, __FILE__, __LINE__);
         
     _write_linebuf_fd(logfd, &linebuf);
@@ -387,6 +407,9 @@ void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client) {
 
 void log_system_err_m(int logfd, loglevel_t level, const char *msg,
                       int errtype) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -397,6 +420,9 @@ void log_system_err_m(int logfd, loglevel_t level, const char *msg,
 
 void log_system_err_m_ex(int logfd, loglevel_t level, const char *msg,
                       const char *desc) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -411,6 +437,9 @@ void log_system_err_m_ex(int logfd, loglevel_t level, const char *msg,
 }
 
 void log_system_err(loglevel_t level, const char *msg, int errtype) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     logger_t *logger = &g_shmem->logger;
     if (!logger->enabled || logger->loglevel < level)
         return;
@@ -424,6 +453,9 @@ void log_system_err(loglevel_t level, const char *msg, int errtype) {
 }
 
 void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -433,6 +465,9 @@ void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si) {
 }
 
 void log_signal(loglevel_t level, struct signalfd_siginfo *si) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     logger_t *logger = &g_shmem->logger;
     if (!logger->enabled || logger->loglevel < level)
         return;
@@ -540,7 +575,7 @@ void log_listen(loglevel_t level, listen_t *listener) {
     linebuf.u.len = LINEBUF_OFFSET;
     const tpx_listen_conf_t *config = listener->config;
     
-    GUARD_APPEND(_base_schema(&linebuf, 1, level, LISTEN_EVENT));
+    GUARD_APPEND(_base_schema(&linebuf, 0, level, LISTEN_EVENT));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " target_ip",
                                     config->target_ip,
@@ -552,8 +587,8 @@ void log_listen(loglevel_t level, listen_t *listener) {
                                     port, strlen(port)));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_ip",
-                                    config->target_ip,
-                                    strlen(config->target_ip)));
+                                    config->listen_ip,
+                                    strlen(config->listen_ip)));
 
     snprintf(port, sizeof(port), "%hu", config->listen_port);
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " listen_port",
@@ -755,13 +790,16 @@ const char *_rfc3339_time(void) {
 
 const char *_pid(void) {
     static char pid[10];
-    snprintf(pid, sizeof(pid)-1, "%d", getpid());
+    snprintf(pid, sizeof(pid), "%d", getpid());
     return pid;
 }
 
 const char *strlevel(loglevel_t level) {
     static char levels[5][6] = {"FATAL", "ERROR", "WARN", "INFO", "DEBUG"};
-    return levels[level];
+
+    if (level < sizeof(levels))
+        return levels[level];
+    return NULL;
 }
 
 void _write_linebuf_fd(int logfd, linebuf_t *linebuf) {
@@ -880,7 +918,17 @@ int _sanitize_c(const char c, char **outptr, const char *endptr) {
     if (*outptr + 1 >= endptr) return -1;
 
     // I had to force myself not to use *(*outptr)++ for this
-    if (isprint(c)) {
+    if (c == '\\') {
+        **outptr = '\\';
+        *outptr += 1;
+        **outptr = '\\';
+        *outptr += 1;
+    } else if (c == '"') {
+        **outptr = '\\';
+        *outptr += 1;
+        **outptr = '"';
+        *outptr += 1;
+    } else if (isprint(c)) {
         **outptr = c;
         *outptr += 1;
     } else {
@@ -891,22 +939,10 @@ int _sanitize_c(const char c, char **outptr, const char *endptr) {
             **outptr = 'n';
             *outptr += 1;
             break;
-        case '\\':
-            **outptr = '\\';
-            *outptr += 1;
-            **outptr = '\\';
-            *outptr += 1;
-            break;
         case '\r':
             **outptr = '\\';
             *outptr += 1;
             **outptr = 'r';
-            *outptr += 1;
-            break;
-        case '"':
-            **outptr = '\\';
-            *outptr += 1;
-            **outptr = '"';
             *outptr += 1;
             break;
         default:

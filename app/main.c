@@ -347,7 +347,7 @@ void parent_loop(tpx_config_t **config_,
                         pid_t pid = -1;
                         int wstatus = 0;
                         while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
-                            log_worker(logfd, LL_WARN, 0, pid, wstatus);
+                            log_worker(logfd, LL_WARN, TPX_WORKER_DEAD, pid, wstatus);
 
                             if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 77) {
                                 for (size_t i=0; i<config->nworkers; ++i)
