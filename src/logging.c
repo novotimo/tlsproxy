@@ -382,14 +382,24 @@ void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client) {
 
     X509_NAME *name = X509_get_subject_name(cert);
     char *subjname = X509_NAME_oneline(name, NULL, 0);
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " cert_subject",
-                                    subjname, strlen(subjname)));
+    if (_linebuf_append_kv(&linebuf, " cert_subject",
+                           subjname, strlen(subjname)) == -1) {
+        CRYPTO_free(subjname, __FILE__, __LINE__);
+        fprintf(stderr, "Error writing log message (%s:%d): buffer is full\n",
+                __func__, __LINE__);
+        return;
+    }
     CRYPTO_free(subjname, __FILE__, __LINE__);
 
     name = X509_get_issuer_name(cert);
     char *issuername = X509_NAME_oneline(name, NULL, 0);
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " cert_issuer",
-                                    issuername, strlen(issuername)));
+    if (_linebuf_append_kv(&linebuf, " cert_issuer",
+                           issuername, strlen(issuername)) == -1) {
+        CRYPTO_free(issuername, __FILE__, __LINE__);
+        fprintf(stderr, "Error writing log message (%s:%d): buffer is full\n",
+                __func__, __LINE__);
+        return;
+    }
     CRYPTO_free(issuername, __FILE__, __LINE__);
         
     _write_linebuf_fd(logfd, &linebuf);
