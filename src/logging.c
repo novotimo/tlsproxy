@@ -540,7 +540,7 @@ void log_listen(loglevel_t level, listen_t *listener) {
     linebuf.u.len = LINEBUF_OFFSET;
     const tpx_listen_conf_t *config = listener->config;
     
-    GUARD_APPEND(_base_schema(&linebuf, 1, level, LISTEN_EVENT));
+    GUARD_APPEND(_base_schema(&linebuf, 0, level, LISTEN_EVENT));
 
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " target_ip",
                                     config->target_ip,
