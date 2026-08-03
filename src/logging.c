@@ -263,7 +263,7 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
     static char dead[] = "dead";
     static char alive[] = "alive";
     
-    char *state = worker_state ? alive : dead;
+    char *state = worker_state == TPX_WORKER_ALIVE ? alive : dead;
     GUARD_APPEND(_linebuf_append_kv(&linebuf, " worker_state",
                                     state, strlen(state)));
     
