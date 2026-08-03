@@ -237,6 +237,12 @@ int main(int argc, char *argv[]) {
             case 0:
                 free(pids);
                 sprintf(argv[0], "tlsproxy: worker");
+
+                // Make sure we die if the parent process does
+                prctl(PR_SET_PDEATHSIG, SIGHUP);
+                if (getppid() == 1)
+                    exit(EXIT_FAILURE);
+
                 child_loop(tpx_config, ssl_ctxs, sfd);
                 exit(EXIT_SUCCESS);
             default:
@@ -732,7 +738,7 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     // Now we're fully convinced our new config is good
     size_t old_workers = (*config)->nworkers;
-    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)*config, 0);
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)config, 0);
     close(*logfd);
 
     *config = new_config;
@@ -756,6 +762,6 @@ restore_shmem:
     g_shmem->logger.enabled = old_enabled;
     g_shmem->logger.loglevel = old_loglevel;
 cleanup_conf:
-    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)&new_config, 0);
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)new_config, 0);
     return 0;
 }
