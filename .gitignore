@@ -60,3 +60,5 @@ dkms.conf
 
 compile_commands.json
 inc/version.h
+
+example/tlsproxy.log

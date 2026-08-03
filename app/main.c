@@ -96,10 +96,20 @@ void usage(const char *pname) {
     exit(EXIT_FAILURE);
 }
 
+/**
+ * @brief Print fatal errors on startup, or during config reload
+ *
+ * If we're in startup, log a fatal error and terminate. If we're doing a
+ * reload, we can't afford to terminate, so just print an error. This should
+ * be run only on the master process.
+ */
 void _fatal(int logfd, const char *msg, int errtype) {
-    log_system_err_m(logfd, LL_FATAL, msg, errtype);
-    if (in_startup)
+    if (in_startup) {
+        log_system_err_m(logfd, LL_FATAL, msg, errtype);
         errx(EXIT_FAILURE, "%s", msg);
+    } else {
+        log_system_err_m(logfd, LL_ERROR, msg, errtype);
+    }
 }
 
 void _child_fatal(const char *msg, int errtype) {
@@ -237,6 +247,12 @@ int main(int argc, char *argv[]) {
             case 0:
                 free(pids);
                 sprintf(argv[0], "tlsproxy: worker");
+
+                // Make sure we die if the parent process does
+                prctl(PR_SET_PDEATHSIG, SIGHUP);
+                if (getppid() == 1)
+                    exit(EXIT_FAILURE);
+
                 child_loop(tpx_config, ssl_ctxs, sfd);
                 exit(EXIT_SUCCESS);
             default:
@@ -345,10 +361,9 @@ void parent_loop(tpx_config_t **config_,
 
                         continue;
                     } else if (si.ssi_signo == SIGHUP) {
-                        if (handle_reload(config_, logfd_, pids_) == 1) {
+                        if (handle_reload(config_, logfd_, pids_) == 1)
                             finishing = 1;
-                            continue;
-                        }
+                        continue;
                     } else if (si.ssi_signo == SIGPIPE) {
                         // All my homies hate SIGPIPE
                         continue;
@@ -558,13 +573,14 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     SSL_CTX_set_options(ctx, opts);
 
     if (config->cacerts != NULL) {
-        load_servcert(config, ctx, logfd);
-        load_cacerts(config, ctx, logfd);
+        if (load_servcert(config, ctx, logfd) == 0)
+            goto cleanup_fail;
+        if (load_cacerts(config, ctx, logfd))
+            goto cleanup_fail;
     } else if (config->cert_chain != NULL) {
         if (SSL_CTX_use_certificate_chain_file(ctx, config->cert_chain) != 1) {
-            SSL_CTX_free(ctx);
             _fatal(logfd, "Couldn't load cert chain", TPX_ERR_OSSL);
-            return NULL;
+            goto cleanup_fail;
         }
 
         STACK_OF(X509) *certs;
@@ -572,9 +588,9 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
         for (int i=0; i<sk_X509_num(certs); ++i)
             log_cert_load(logfd, LL_INFO, sk_X509_value(certs, i), 0);
     } else {
-        _fatal(logfd, "Config contains both cert-chain and cacerts",
+        _fatal(logfd, "Config contains neither cert-chain nor cacerts",
                TPX_ERR_PLAIN);
-        return NULL;
+        goto cleanup_fail;
     }
 
     int flags = config->cacerts == NULL
@@ -583,33 +599,43 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
                     : 0;
 
     if (SSL_CTX_build_cert_chain(ctx, flags) != 1) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to build cert chain", TPX_ERR_OSSL);
-        return NULL;
+        goto cleanup_fail;
     }
 
-    load_servkey(config, ctx, logfd);
+    if (load_servkey(config, ctx, logfd) == 0)
+        goto cleanup_fail;
 
     // No mTLS
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
 
     return ctx;
+
+cleanup_fail:
+    SSL_CTX_free(ctx);
+    return NULL;
 }
 
 /** @brief Load the server certificate into the SSL_CTX */
 int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     BIO *leaf_bio = BIO_new_file(config->servcert, "r");
+    if (leaf_bio == NULL)
+    {
+        _fatal(logfd, "Failed to open server cert file", TPX_ERR_OSSL);
+        return 0;
+    }
+
     X509 *leaf = NULL;
     if (!PEM_read_bio_X509(leaf_bio, &leaf, NULL, NULL)) {
         BIO_free(leaf_bio);
         _fatal(logfd, "Failed to load server cert", TPX_ERR_OSSL);
-        return 1;
+        return 0;
     }
+
     BIO_free(leaf_bio);
     log_cert_load(logfd, LL_INFO, leaf, 0);
 
     if (SSL_CTX_use_certificate(ctx, leaf) != 1) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to add server certificate to CTX", TPX_ERR_OSSL);
         return 0;
     }
@@ -619,10 +645,16 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
 /** @brief Load the CA certificates into the SSL_CTX */
 int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     X509_STORE *store = X509_STORE_new();
+    if (store == NULL) {
+        _fatal(logfd, "Couldn't allocate X509 store", TPX_ERR_OSSL);
+        return 0;
+    }
+
     X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
     for (size_t i=0; i<config->cacerts_count; ++i) {
         if (!X509_LOOKUP_load_file(lookup, config->cacerts[i],
                                    X509_FILETYPE_PEM)) {
+            X509_STORE_free(store);
             _fatal(logfd, "Couldn't load CA certificate", TPX_ERR_OSSL);
             return 0;
         }
@@ -640,17 +672,21 @@ int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
 /** @brief Load the server private key into the SSL_CTX */
 int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     BIO *pkey_bio = BIO_new_file(config->servkey, "r");
+    if (pkey_bio == NULL)
+    {
+        _fatal(logfd, "Failed to open server key file", TPX_ERR_OSSL);
+        return 0;
+    }
+
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(pkey_bio, NULL, NULL,
                                              (void *)config->servkeypass);
     BIO_free(pkey_bio);
     if (pkey == NULL) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to read server key", TPX_ERR_OSSL);
         return 0;
     }
     
     if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to load server key into ctx", TPX_ERR_OSSL);
         return 0;
     }
@@ -671,6 +707,12 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     // This could be done better, I imagine. Make sure to watch config.c for
     // changes to the logic in tpx_validate_conf
+    if (new_config->listeners_count < 1) {
+        log_system_err_m_ex(
+            *logfd, LL_ERROR, "Couldn't reload config", "No listeners provided");
+        goto cleanup_conf;
+    }
+
     for (size_t i=0; i<new_config->listeners_count; ++i) {
         const tpx_listen_conf_t *listen_conf = &new_config->listeners[i];
         if (!listen_conf->cert_chain && !listen_conf->cacerts) {
@@ -724,26 +766,28 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
         // prove that it will be made without errors
         SSL_CTX *ssl_ctx = init_openssl(&new_config->listeners[i], new_logfd);
         if (!ssl_ctx) {
-            log_system_err_m(*logfd, LL_ERROR, "Couldn't reload config",
-                             TPX_ERR_OSSL);
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                               "Couldn't initialize OpenSSL");
             goto restore_shmem;
         }
         SSL_CTX_free(ssl_ctx);
     }
 
-    // Now we're fully convinced our new config is good
-    size_t old_workers = (*config)->nworkers;
-    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)*config, 0);
-    close(*logfd);
-
-    *config = new_config;
-    *logfd = new_logfd;
-
+    // Do this before clearing our old config, because it can fail
     pid_t *new_pids = calloc((*config)->nworkers, sizeof(pid_t));
     if (!new_pids) {
         perror("Couldn't allocate PID list");
         goto restore_shmem;
     }
+
+    // Now we're fully convinced our new config is good
+    size_t old_workers = (*config)->nworkers;
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)*config, 0);
+    close(*logfd);
+
+    *config = new_config;
+    *logfd = new_logfd;
+
 
     for (size_t i=0; i<old_workers; ++i)
         kill((*pids)[i], SIGHUP);
@@ -757,6 +801,6 @@ restore_shmem:
     g_shmem->logger.enabled = old_enabled;
     g_shmem->logger.loglevel = old_loglevel;
 cleanup_conf:
-    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t **)&new_config, 0);
+    cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)new_config, 0);
     return 0;
 }
