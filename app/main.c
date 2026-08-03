@@ -629,7 +629,6 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     log_cert_load(logfd, LL_INFO, leaf, 0);
 
     if (SSL_CTX_use_certificate(ctx, leaf) != 1) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Failed to add server certificate to CTX", TPX_ERR_OSSL);
         return 0;
     }
@@ -639,10 +638,16 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
 /** @brief Load the CA certificates into the SSL_CTX */
 int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     X509_STORE *store = X509_STORE_new();
+    if (store == NULL) {
+        _fatal(logfd, "Couldn't allocate X509 store", TPX_ERR_OSSL);
+        return 0;
+    }
+
     X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
     for (size_t i=0; i<config->cacerts_count; ++i) {
         if (!X509_LOOKUP_load_file(lookup, config->cacerts[i],
                                    X509_FILETYPE_PEM)) {
+            X509_STORE_free(store);
             _fatal(logfd, "Couldn't load CA certificate", TPX_ERR_OSSL);
             return 0;
         }
