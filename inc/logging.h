@@ -67,7 +67,11 @@ typedef struct listen_s listen_t;
 
 
 // For master process
-void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
+/**
+ * @brief Writes the logs in the event buffer to file
+ * @return The number of events actually written.
+ */
+uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count);
 
 // Message schemas (Master). _m refers to master versions of functions
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]);

@@ -103,7 +103,7 @@ int _base_schema(linebuf_t *linebuf, int is_master, loglevel_t level,
 
 
 // This runs on the master process only
-void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
+uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
     if (!logger->enabled)
         errx(EXIT_FAILURE,
              "Somehow write_logs was called when logging was disabled");
@@ -182,7 +182,8 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             perror("Writing log failed");
 
             // There's guaranteed to be this much room in the ring buffer, as we
-            // got at least LINEBUF_OFFSET bytes when grabbing the length
+            // incremented read_idx at least LINEBUF_OFFSET bytes when grabbing
+            // the length
             if (linelen > 0) {
                 union {
                     char b[LINEBUF_OFFSET];
@@ -193,7 +194,7 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                     logger->log_buf[logger->read_idx] = u.b[LINEBUF_OFFSET-j-1];
                 }
             }
-            return;
+            return i;
         }
         
         // Skip the null byte
@@ -208,6 +209,8 @@ void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         if (w_idx > 0)
             assert(logger->log_buf[w_idx-1] == '\0');
     }
+
+    return evt_count;
 }
 
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
