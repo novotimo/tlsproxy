@@ -45,6 +45,7 @@ typedef struct logger_s {
     uint8_t enabled; /**< @brief Whether logging is enabled at all */
     loglevel_t loglevel; /**< @brief The maximum level of messages to log */
     int eventfd; /**< @brief The event fd used to notify the logger process */
+    uint8_t droplines; /**< @brief Whether we are dopping new log lines */
 
      /** @brief The index to read from.
       *
@@ -52,8 +53,8 @@ typedef struct logger_s {
       * to write. If the buffer is full, read_idx will stop at write_idx-1
       * or read_idx=0 and write_idx=TPX_LOGBUF_SIZE-1
       */
-    uint32_t read_idx;
-    uint32_t write_idx; /**< @brief The index from which to start writing */
+    _Atomic(uint32_t) read_idx;
+    _Atomic(uint32_t) write_idx; /**< @brief The index from which to start writing */
     pthread_mutex_t write_lock; /**< @brief One at a time, workers */
     char log_buf[TPX_LOGBUF_SIZE]; /**< @brief A ring buffer containing log
                                       messages to write */
@@ -66,7 +67,11 @@ typedef struct listen_s listen_t;
 
 
 // For master process
-void write_logs(int logfd, logger_t *logger, uint64_t evt_count);
+/**
+ * @brief Writes the logs in the event buffer to file
+ * @return The number of events actually written.
+ */
+uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count);
 
 // Message schemas (Master). _m refers to master versions of functions
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]);

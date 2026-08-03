@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <err.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
@@ -44,6 +45,9 @@ shared_t *g_shmem;
 
 #define INC_WRAP(IDX) \
     (IDX + 1 >= TPX_LOGBUF_SIZE) ? IDX = 0 : IDX++
+
+#define DEC_WRAP(IDX) \
+    (IDX == 0) ? IDX = TPX_LOGBUF_SIZE - 1 : IDX--
 
 #define GUARD_APPEND(CALL)                                              \
     if (CALL == -1) {                                                   \
@@ -100,84 +104,124 @@ int _base_schema(linebuf_t *linebuf, int is_master, loglevel_t level,
 
 
 // This runs on the master process only
-void write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
+uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
     if (!logger->enabled)
         errx(EXIT_FAILURE,
              "Somehow write_logs was called when logging was disabled");
 
     for (size_t i=0; i<evt_count; ++i) {
         // Make sure our write index doesn't change during loop
-        uint64_t w_idx = logger->write_idx;
-        int wrapped = w_idx < logger->read_idx;
+        uint32_t w_idx = logger->write_idx;
+        // We don't want to worry about rollback, so keep a copy
+        uint32_t r_idx = logger->read_idx;
+        int will_wrap = w_idx < r_idx;
         
         // Invariants
-        assert(logger->read_idx < TPX_LOGBUF_SIZE);
+        assert(r_idx < TPX_LOGBUF_SIZE);
         assert(w_idx < TPX_LOGBUF_SIZE);
-        if (logger->read_idx > 0)
-            assert(logger->log_buf[logger->read_idx-1] == '\0');
+        if (r_idx > 0)
+            assert(logger->log_buf[r_idx-1] == '\0');
         if (w_idx > 0)
             assert(logger->log_buf[w_idx-1] == '\0');
         
         // This length includes the current byte.
-        size_t len_to_end = TPX_LOGBUF_SIZE - logger->read_idx;
+        size_t len_to_end = TPX_LOGBUF_SIZE - r_idx;
         uint32_t linelen = 0;
+
         if (len_to_end >= LINEBUF_OFFSET) {
-            linelen = *(uint32_t *)&logger->log_buf[logger->read_idx];
-            logger->read_idx+=LINEBUF_OFFSET;
+            linelen = *(uint32_t *)&logger->log_buf[r_idx];
+            r_idx+=LINEBUF_OFFSET;
         } else {
             union {
                 char b[LINEBUF_OFFSET];
                 uint32_t i;
             } u;
             for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
-                u.b[j] = logger->log_buf[logger->read_idx];
-                INC_WRAP(logger->read_idx);
+                u.b[j] = logger->log_buf[r_idx];
+                INC_WRAP(r_idx);
             }
             linelen = u.i;
         }
-        assert(linelen > LINEBUF_OFFSET && linelen < TPX_LOG_LINE_MAX);
+        assert(linelen > LINEBUF_OFFSET && linelen <= TPX_LOG_LINE_MAX + 1);
         linelen -= LINEBUF_OFFSET;
         len_to_end -= LINEBUF_OFFSET;
-        
-        ssize_t nwritten = write(logfd, &logger->log_buf[logger->read_idx],
-                                MIN(len_to_end,linelen));
+
+        size_t ntowrite = MIN(len_to_end, linelen);
+        ssize_t nwritten = 0;
+        errno = 0;
+
+        while (ntowrite > 0 &&
+               ((nwritten = write(logfd, &logger->log_buf[r_idx],
+                                  ntowrite)) > 0 || errno == EINTR)) {
+            // Invariants
+            assert(errno == EINTR || nwritten >= 0);
+            assert(errno == EINTR || (size_t)nwritten <= ntowrite);
+
+            if (errno == EINTR)
+            {
+                errno = 0;
+                continue;
+            }
+
+            r_idx += nwritten;
+            if (r_idx >= TPX_LOGBUF_SIZE)
+                r_idx = 0;
+
+            // `ntowrite` is the amount we want to write with the current write call
+            ntowrite -= (size_t)nwritten;
+            // `linelen` is the total size of the line
+            linelen  -= (size_t)nwritten;
+
+            if (will_wrap) {
+                len_to_end -= (size_t)nwritten;
+
+                if (len_to_end == 0) {
+                    ntowrite = linelen;
+                    will_wrap = 0;
+                }
+            }
+
+            // Invariants
+            assert(nwritten >= 0);
+        }
+
         if (nwritten == -1) {
             // We don't want to crash here
             perror("Writing log failed");
-            return;
-        }
 
-        logger->read_idx += nwritten;
-        if (logger->read_idx >= TPX_LOGBUF_SIZE)
-            logger->read_idx = 0;
-
-        // If we need to wrap around
-        if (wrapped && (size_t)nwritten == len_to_end && linelen > len_to_end) {
-            size_t remaining = linelen - len_to_end;
-            
-            assert(logger->read_idx == 0);
-            
-            nwritten = write(logfd, &logger->log_buf[logger->read_idx],
-                remaining);
-            if (nwritten == -1) {
-                perror("Writing log failed");
-                return;
+            // Write the length of the unwritten bytes back into our ring buffer
+            if (linelen > 0) {
+                union {
+                    char b[LINEBUF_OFFSET];
+                    uint32_t i;
+                } u;
+                u.i = linelen + LINEBUF_OFFSET;
+                for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
+                    DEC_WRAP(r_idx);
+                    logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
+                }
             }
-            logger->read_idx = remaining;
+
+            logger->read_idx = r_idx;
+            return i;
         }
-        
+
         // Skip the null byte
-        assert(logger->log_buf[logger->read_idx] == '\0');
-        INC_WRAP(logger->read_idx);
+        assert(logger->log_buf[r_idx] == '\0');
+        INC_WRAP(r_idx);
+
+        logger->read_idx = r_idx;
         
         // Invariants
-        assert(logger->read_idx < TPX_LOGBUF_SIZE);
+        assert(r_idx < TPX_LOGBUF_SIZE);
         assert(w_idx < TPX_LOGBUF_SIZE);
-        if (logger->read_idx > 0)
-            assert(logger->log_buf[logger->read_idx-1] == '\0');
+        if (r_idx > 0)
+            assert(logger->log_buf[r_idx-1] == '\0');
         if (w_idx > 0)
             assert(logger->log_buf[w_idx-1] == '\0');
     }
+
+    return evt_count;
 }
 
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
@@ -668,6 +712,8 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
         linebuf->u.len = sanptr - sanitized;
         if (filled) return -1;
     } else {
+        if (linebuf->u.len + len > TPX_LOG_LINE_MAX) return -1;
+
         memcpy(linebuf->u.buf + linebuf->u.len, str, len);
         linebuf->u.len += len;
     }
@@ -732,16 +778,27 @@ int _linebuf_append_cb(const char *str, size_t len, void *u) {
 
 void _write_linebuf(logger_t *logger, linebuf_t *line) {
     line->u.buf[line->u.len++] = '\n';
-    
-    if (pthread_mutex_lock(&logger->write_lock)) {
-        perror("pthread_mutex_lock when logging");
+
+    int ret = pthread_mutex_lock(&logger->write_lock);
+    if (ret == EOWNERDEAD) {
+        // write_idx is only changed (atomically) after all bytes are written,
+        // we don't need to do anything. For droplines, this would cause at most
+        // one extra log message printed (it's for rate limiting error messages)
+        pthread_mutex_consistent(&logger->write_lock);
+    } else if (ret) {
+        fprintf(stderr, "pthread_mutex_lock when logging: %s", strerror(ret));
         return;
     }
     
     if (!_ringbuf_fits(logger, line->u.len)) {
-        fprintf(stderr, "Ring buffer full, dropping new logs...\n");
+        pthread_mutex_unlock(&logger->write_lock);
+        if (!logger->droplines)
+            fprintf(stderr, "Ring buffer full, dropping new logs...\n");
+
+        logger->droplines = 1;
         return;
     }
+    logger->droplines = 0;
     
     uint32_t w_idx = logger->write_idx;
     
@@ -873,5 +930,5 @@ int _hex_c(const char c, char **outptr, const char *endptr) {
 
 int _ringbuf_fits(logger_t *logger, uint32_t len) {
     return(((TPX_LOGBUF_SIZE + logger->read_idx - logger->write_idx - 1)
-           % TPX_LOGBUF_SIZE) >= len);
+           % TPX_LOGBUF_SIZE) >= len + 1);
 }

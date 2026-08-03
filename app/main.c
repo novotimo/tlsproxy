@@ -139,10 +139,13 @@ int init_logger(tpx_config_t *config) {
         g_shmem->logger.loglevel = *config->loglevel;
     else
         g_shmem->logger.loglevel = LL_INFO;
+
+    g_shmem->logger.droplines = 0;
     
     pthread_mutexattr_t attrs;
     pthread_mutexattr_init(&attrs);
     pthread_mutexattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
+    pthread_mutexattr_setrobust(&attrs, PTHREAD_MUTEX_ROBUST);
     pthread_mutex_init(&g_shmem->logger.write_lock, &attrs);
     pthread_mutexattr_destroy(&attrs);
     return logfd;
@@ -326,7 +329,14 @@ void parent_loop(tpx_config_t **config_,
                                      TPX_ERR_ERRNO);
                     continue;
                 }
-                write_logs(logfd, &g_shmem->logger, count);
+
+                count -= write_logs(logfd, &g_shmem->logger, count);
+
+                // If we couldn't write all the logs, re-emit the events so we can try again
+                if (count > 0 && write(efd, (void *)&count, sizeof(count)) != sizeof(count)) {
+                    // This means we have a log desync, we can't really do anything but quit
+                    err(EXIT_FAILURE, "Couldn't write log events to eventfd");
+                }
             } else if (events[n].data.fd == sigfd) {
                 struct signalfd_siginfo si;
                 while (read(sigfd, &si, sizeof(si)) == sizeof(si)) {
