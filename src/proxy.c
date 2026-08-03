@@ -48,12 +48,22 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
     proxy->timer_set = 0;
     proxy->hand_shaken = 0;
 
-    proxy->serv_fd = create_connect(proxy);
+    log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
+
+    if ((proxy->serv_fd = create_connect(proxy)) == -1) {
+        queue_free(proxy->c2s);
+        queue_free(proxy->s2c);
+
+        // fd hasn't been added to epoll yet, and SSL will be freed outside
+        free(proxy);
+
+        return NULL;
+    }
+
     tpx_err_t ret = proxy_handle_connect(proxy, conn_timeout);
-    if (ret == TPX_SUCCESS) {
+    if (ret == TPX_SUCCESS)
         proxy->state = PS_READY;
-        log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
-    } else if (ret == TPX_AGAIN)
+    else if (ret == TPX_AGAIN)
         proxy->state = PS_SERVER_CONNECTING;
     else {
         close(proxy->serv_fd);
@@ -64,8 +74,8 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
 
         // fd hasn't been added to epoll yet, and SSL will be freed outside
         free(proxy);
-        
-        proxy = NULL;
+
+        return NULL;
     }
 
     nproxies++;
@@ -86,11 +96,13 @@ int create_connect(proxy_t *proxy) {
         log_proxy(LL_ERROR, proxy, "ioerror",
                   "Couldn't get socket flags of connect socket",
                   strerror(errno));
+        close(conn_sock);
         return -1;
     }
     if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
         log_proxy(LL_ERROR, proxy, "ioerror", "Couldn't set connect socket to "
                   "non-blocking mode", strerror(errno));
+        close(conn_sock);
         return -1;
     }
     return conn_sock;
