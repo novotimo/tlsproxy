@@ -619,12 +619,19 @@ cleanup_fail:
 /** @brief Load the server certificate into the SSL_CTX */
 int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     BIO *leaf_bio = BIO_new_file(config->servcert, "r");
+    if (leaf_bio == NULL)
+    {
+        _fatal(logfd, "Failed to open server cert file", TPX_ERR_OSSL);
+        return 0;
+    }
+
     X509 *leaf = NULL;
     if (!PEM_read_bio_X509(leaf_bio, &leaf, NULL, NULL)) {
         BIO_free(leaf_bio);
         _fatal(logfd, "Failed to load server cert", TPX_ERR_OSSL);
         return 0;
     }
+
     BIO_free(leaf_bio);
     log_cert_load(logfd, LL_INFO, leaf, 0);
 
@@ -665,6 +672,12 @@ int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
 /** @brief Load the server private key into the SSL_CTX */
 int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     BIO *pkey_bio = BIO_new_file(config->servkey, "r");
+    if (pkey_bio == NULL)
+    {
+        _fatal(logfd, "Failed to open server key file", TPX_ERR_OSSL);
+        return 0;
+    }
+
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(pkey_bio, NULL, NULL,
                                              (void *)config->servkeypass);
     BIO_free(pkey_bio);
