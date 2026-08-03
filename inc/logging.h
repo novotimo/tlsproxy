@@ -45,6 +45,7 @@ typedef struct logger_s {
     uint8_t enabled; /**< @brief Whether logging is enabled at all */
     loglevel_t loglevel; /**< @brief The maximum level of messages to log */
     int eventfd; /**< @brief The event fd used to notify the logger process */
+    uint8_t droplines; /**< @brief Whether we are dopping new log lines */
 
      /** @brief The index to read from.
       *

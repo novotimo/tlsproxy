@@ -139,6 +139,8 @@ int init_logger(tpx_config_t *config) {
         g_shmem->logger.loglevel = *config->loglevel;
     else
         g_shmem->logger.loglevel = LL_INFO;
+
+    g_shmem->logger.droplines = 0;
     
     pthread_mutexattr_t attrs;
     pthread_mutexattr_init(&attrs);

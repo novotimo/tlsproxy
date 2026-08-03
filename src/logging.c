@@ -739,9 +739,14 @@ void _write_linebuf(logger_t *logger, linebuf_t *line) {
     }
     
     if (!_ringbuf_fits(logger, line->u.len)) {
-        fprintf(stderr, "Ring buffer full, dropping new logs...\n");
+        pthread_mutex_unlock(&logger->write_lock);
+        if (!logger->droplines)
+            fprintf(stderr, "Ring buffer full, dropping new logs...\n");
+
+        logger->droplines = 1;
         return;
     }
+    logger->droplines = 0;
     
     uint32_t w_idx = logger->write_idx;
     
