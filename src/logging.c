@@ -110,31 +110,34 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 
     for (size_t i=0; i<evt_count; ++i) {
         // Make sure our write index doesn't change during loop
-        uint64_t w_idx = logger->write_idx;
-        int will_wrap = w_idx < logger->read_idx;
+        uint32_t w_idx = logger->write_idx;
+        // We don't want to worry about rollback, so keep a copy
+        uint32_t r_idx = logger->read_idx;
+        int will_wrap = w_idx < r_idx;
         
         // Invariants
-        assert(logger->read_idx < TPX_LOGBUF_SIZE);
+        assert(r_idx < TPX_LOGBUF_SIZE);
         assert(w_idx < TPX_LOGBUF_SIZE);
-        if (logger->read_idx > 0)
-            assert(logger->log_buf[logger->read_idx-1] == '\0');
+        if (r_idx > 0)
+            assert(logger->log_buf[r_idx-1] == '\0');
         if (w_idx > 0)
             assert(logger->log_buf[w_idx-1] == '\0');
         
         // This length includes the current byte.
-        size_t len_to_end = TPX_LOGBUF_SIZE - logger->read_idx;
+        size_t len_to_end = TPX_LOGBUF_SIZE - r_idx;
         uint32_t linelen = 0;
+
         if (len_to_end >= LINEBUF_OFFSET) {
-            linelen = *(uint32_t *)&logger->log_buf[logger->read_idx];
-            logger->read_idx+=LINEBUF_OFFSET;
+            linelen = *(uint32_t *)&logger->log_buf[r_idx];
+            r_idx+=LINEBUF_OFFSET;
         } else {
             union {
                 char b[LINEBUF_OFFSET];
                 uint32_t i;
             } u;
             for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
-                u.b[j] = logger->log_buf[logger->read_idx];
-                INC_WRAP(logger->read_idx);
+                u.b[j] = logger->log_buf[r_idx];
+                INC_WRAP(r_idx);
             }
             linelen = u.i;
         }
@@ -147,7 +150,7 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         errno = 0;
 
         while (ntowrite > 0 &&
-               ((nwritten = write(logfd, &logger->log_buf[logger->read_idx],
+               ((nwritten = write(logfd, &logger->log_buf[r_idx],
                                   ntowrite)) > 0 || errno == EINTR)) {
             // Invariants
             assert(errno == EINTR || nwritten >= 0);
@@ -159,9 +162,9 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                 continue;
             }
 
-            logger->read_idx += nwritten;
-            if (logger->read_idx >= TPX_LOGBUF_SIZE)
-                logger->read_idx = 0;
+            r_idx += nwritten;
+            if (r_idx >= TPX_LOGBUF_SIZE)
+                r_idx = 0;
 
             // `ntowrite` is the amount we want to write with the current write call
             ntowrite -= (size_t)nwritten;
@@ -185,9 +188,7 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             // We don't want to crash here
             perror("Writing log failed");
 
-            // There's guaranteed to be this much room in the ring buffer, as we
-            // incremented read_idx at least LINEBUF_OFFSET bytes when grabbing
-            // the length
+            // Write the length of the unwritten bytes back into our ring buffer
             if (linelen > 0) {
                 union {
                     char b[LINEBUF_OFFSET];
@@ -195,22 +196,26 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                 } u;
                 u.i = linelen;
                 for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
-                    DEC_WRAP(logger->read_idx);
-                    logger->log_buf[logger->read_idx] = u.b[LINEBUF_OFFSET-j-1];
+                    DEC_WRAP(r_idx);
+                    logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
                 }
             }
+
+            logger->read_idx = r_idx;
             return i;
         }
-        
+
         // Skip the null byte
-        assert(logger->log_buf[logger->read_idx] == '\0');
-        INC_WRAP(logger->read_idx);
+        assert(logger->log_buf[r_idx] == '\0');
+        INC_WRAP(r_idx);
+
+        logger->read_idx = r_idx;
         
         // Invariants
-        assert(logger->read_idx < TPX_LOGBUF_SIZE);
+        assert(r_idx < TPX_LOGBUF_SIZE);
         assert(w_idx < TPX_LOGBUF_SIZE);
-        if (logger->read_idx > 0)
-            assert(logger->log_buf[logger->read_idx-1] == '\0');
+        if (r_idx > 0)
+            assert(logger->log_buf[r_idx-1] == '\0');
         if (w_idx > 0)
             assert(logger->log_buf[w_idx-1] == '\0');
     }

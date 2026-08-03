@@ -53,8 +53,8 @@ typedef struct logger_s {
       * to write. If the buffer is full, read_idx will stop at write_idx-1
       * or read_idx=0 and write_idx=TPX_LOGBUF_SIZE-1
       */
-    uint32_t read_idx;
-    uint32_t write_idx; /**< @brief The index from which to start writing */
+    _Atomic(uint32_t) read_idx;
+    _Atomic(uint32_t) write_idx; /**< @brief The index from which to start writing */
     pthread_mutex_t write_lock; /**< @brief One at a time, workers */
     char log_buf[TPX_LOGBUF_SIZE]; /**< @brief A ring buffer containing log
                                       messages to write */
