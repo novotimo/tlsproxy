@@ -225,6 +225,9 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 }
 
 void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -249,6 +252,9 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
 
 void log_worker(int logfd, loglevel_t level, int worker_state,
                 pid_t worker_pid, int wstatus) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -288,6 +294,9 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
 }
 
 void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
     
@@ -303,6 +312,9 @@ void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config) {
 }
 
 void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
     
@@ -387,6 +399,9 @@ void log_cert_load(int logfd, loglevel_t level, X509 *cert, int is_client) {
 
 void log_system_err_m(int logfd, loglevel_t level, const char *msg,
                       int errtype) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -397,6 +412,9 @@ void log_system_err_m(int logfd, loglevel_t level, const char *msg,
 
 void log_system_err_m_ex(int logfd, loglevel_t level, const char *msg,
                       const char *desc) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -411,6 +429,9 @@ void log_system_err_m_ex(int logfd, loglevel_t level, const char *msg,
 }
 
 void log_system_err(loglevel_t level, const char *msg, int errtype) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     logger_t *logger = &g_shmem->logger;
     if (!logger->enabled || logger->loglevel < level)
         return;
@@ -424,6 +445,9 @@ void log_system_err(loglevel_t level, const char *msg, int errtype) {
 }
 
 void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
@@ -433,6 +457,9 @@ void log_signal_m(int logfd, loglevel_t level, struct signalfd_siginfo *si) {
 }
 
 void log_signal(loglevel_t level, struct signalfd_siginfo *si) {
+    if (!g_shmem->logger.enabled || g_shmem->logger.loglevel < level)
+        return;
+
     logger_t *logger = &g_shmem->logger;
     if (!logger->enabled || logger->loglevel < level)
         return;

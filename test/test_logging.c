@@ -1139,34 +1139,25 @@ static void log_system_err_m_appends_the_errno_text(void **state) {
     assert_contains(logtext, strerror(ENOENT));
 }
 
-/* app/main.c passes logfd = -1 when the config has no logfile, and every
-   master schema writes to it regardless. perror then puts a line on stderr for
-   every startup, signal, worker death and reload -- so turning logging off
-   makes the process noisier, on the stream a container runtime collects. */
+/* The worker schemas honour logger->enabled; the master schemas took the fd
+   they were handed and wrote to it. app/main.c:init_logger() returns -1 for a
+   config with no logfile and returns *before* setting enabled, and the shmem
+   page is zero-filled, so the disabled case is exactly (enabled == 0, logfd ==
+   -1) and main() calls log_startup() and log_config_load() with it anyway.
+   Writing to -1 fails and perror puts a line on stderr, so turning logging off
+   made the process noisier on the stream a container runtime collects.
+
+   The fd here is the live pipe, not -1: the claim is that nothing is written
+   at all, and asserting that directly beats inferring it from the absence of
+   an EBADF complaint. A regression shows up as bytes in the pipe whether or
+   not the fd it was given happens to be writable. */
 static void master_logs_are_silent_when_logging_is_disabled(void **state) {
     (void)state;
-    int err_pipe[2];
-    assert_int_equal(pipe(err_pipe), 0);
-    set_nonblocking(err_pipe[0]);
+    logger->enabled = 0;
 
-    int saved = dup(STDERR_FILENO);
-    assert_int_not_equal(saved, -1);
-    assert_int_not_equal(dup2(err_pipe[1], STDERR_FILENO), -1);
+    log_system_err_m(logpipe[1], LL_FATAL, "logging is off", TPX_ERR_PLAIN);
 
-    log_system_err_m(-1, LL_FATAL, "logging is off", TPX_ERR_PLAIN);
-
-    assert_int_not_equal(dup2(saved, STDERR_FILENO), -1);
-    close(saved);
-    close(err_pipe[1]);
-
-    char noise[512] = {0};
-    ssize_t n = read(err_pipe[0], noise, sizeof(noise) - 1);
-    close(err_pipe[0]);
-    if (n < 0) n = 0;
-    noise[n] = '\0';
-
-    if (n != 0)
-        fail_msg("logging disabled, but stderr got: %s", noise);
+    assert_int_equal(read_logs(), 0);
 }
 
 
