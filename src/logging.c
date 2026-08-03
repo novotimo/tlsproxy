@@ -282,7 +282,7 @@ void log_worker(int logfd, loglevel_t level, int worker_state,
         snprintf(intstr, sizeof(intstr), "%d", WEXITSTATUS(wstatus));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " reason", "exited",
-                                        sizeof("signal")-1));
+                                        sizeof("exited")-1));
         
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " code", intstr,
                                         strlen(intstr)));
@@ -301,8 +301,8 @@ void log_config_load(int logfd, loglevel_t level, const tpx_config_t *config) {
     GUARD_APPEND(_base_schema(&linebuf, 1, level, CONFIG_LOAD_EVENT));
 
     // Integers need up to 12 characters
-    static char nworkers[9+12];
-    snprintf(nworkers, sizeof(nworkers), " nworkers=%d", config->nworkers);
+    static char nworkers[sizeof(" nworkers=")+12];
+    snprintf(nworkers, sizeof(nworkers), " nworkers=%u", config->nworkers);
     GUARD_APPEND(_linebuf_append(&linebuf, nworkers, strlen(nworkers),
                                  TPX_MODE_NONE));
 
@@ -790,13 +790,16 @@ const char *_rfc3339_time(void) {
 
 const char *_pid(void) {
     static char pid[10];
-    snprintf(pid, sizeof(pid)-1, "%d", getpid());
+    snprintf(pid, sizeof(pid), "%d", getpid());
     return pid;
 }
 
 const char *strlevel(loglevel_t level) {
     static char levels[5][6] = {"FATAL", "ERROR", "WARN", "INFO", "DEBUG"};
-    return levels[level];
+
+    if (level < sizeof(levels))
+        return levels[level];
+    return NULL;
 }
 
 void _write_linebuf_fd(int logfd, linebuf_t *linebuf) {
