@@ -1,5 +1,9 @@
 name: Coverage
 
+permissions:
+  contents: write
+  pages: write
+
 # push only, no pull_request: running both fired this twice on any branch with
 # an open PR. Same reasoning as cmake-debug-test.yml.
 on:
@@ -26,6 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: true
+        fetch-depth: 0
 
     - name: Install dependencies
       run: |
@@ -47,6 +54,14 @@ jobs:
     # job needs is for every suite to have RUN, so the counters are populated.
     - name: Run tests
       run: ctest --test-dir build || true
+
+    # Upload ctest log for debugging failing suites
+    - name: Upload ctest log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ctest-logs
+        path: build/Testing/Temporary/LastTest.log
 
     # --filter src/ so the measurement is of the code under test. The test
     # files themselves, external/ and app/main.c are excluded: main.c has no
