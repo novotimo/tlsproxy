@@ -2,11 +2,15 @@ name: CMake Build and Test
 
 # Runs on every branch, not just main: the test suites are the thing being
 # developed here, and a suite that only runs after merge is not a gate.
+#
+# push only, no pull_request: with both, every push to a branch with an open PR
+# ran the whole matrix twice. push fires once per commit and covers a branch
+# before any PR exists, which pull_request cannot. The cost is that this tests
+# the branch tip rather than the tip merged into main -- rebase before merging.
+# A PR from a fork would get no CI here; origin has no forks today.
 on:
   push:
     branches: [ "**" ]
-  pull_request:
-    branches: [ "main" ]
 
 env:
   BUILD_TYPE: Debug
