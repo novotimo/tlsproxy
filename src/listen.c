@@ -32,10 +32,12 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     int sock_flags;
     if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
         perror("handle_accept: fcntl(GETFL)");
+        close(conn_sock);
         return TPX_FAILURE;
     }
     if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
         perror("handle_accept: fcntl(SETFL)");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -43,6 +45,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     if (ssl == NULL) {
         ERR_print_errors_fp(stderr);
         fprintf(stderr, "handle_accept: SSL_new: Couldn't create SSL ctx\n");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -50,6 +53,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: SSL_set_fd: Couldn't assign sock\n");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -60,9 +64,9 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     proxy_t *proxy = create_proxy(conn_sock, ssl,
                                   listen, listen->config->connect_timeout);
     if (!proxy) {
-        close(conn_sock);
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
