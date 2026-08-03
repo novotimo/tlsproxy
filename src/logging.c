@@ -154,7 +154,10 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             assert(errno == EINTR || (size_t)nwritten <= ntowrite);
 
             if (errno == EINTR)
+            {
+                errno = 0;
                 continue;
+            }
 
             logger->read_idx += nwritten;
             if (logger->read_idx >= TPX_LOGBUF_SIZE)
