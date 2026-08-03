@@ -880,7 +880,17 @@ int _sanitize_c(const char c, char **outptr, const char *endptr) {
     if (*outptr + 1 >= endptr) return -1;
 
     // I had to force myself not to use *(*outptr)++ for this
-    if (isprint(c)) {
+    if (c == '\\') {
+        **outptr = '\\';
+        *outptr += 1;
+        **outptr = '\\';
+        *outptr += 1;
+    } else if (c == '"') {
+        **outptr = '\\';
+        *outptr += 1;
+        **outptr = '"';
+        *outptr += 1;
+    } else if (isprint(c)) {
         **outptr = c;
         *outptr += 1;
     } else {
@@ -891,22 +901,10 @@ int _sanitize_c(const char c, char **outptr, const char *endptr) {
             **outptr = 'n';
             *outptr += 1;
             break;
-        case '\\':
-            **outptr = '\\';
-            *outptr += 1;
-            **outptr = '\\';
-            *outptr += 1;
-            break;
         case '\r':
             **outptr = '\\';
             *outptr += 1;
             **outptr = 'r';
-            *outptr += 1;
-            break;
-        case '"':
-            **outptr = '\\';
-            *outptr += 1;
-            **outptr = '"';
             *outptr += 1;
             break;
         default:
