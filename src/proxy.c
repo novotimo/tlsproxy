@@ -37,6 +37,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                        TPX_ERR_ERRNO);
         return NULL;
     }
+    memset(proxy, '\0', sizeof(proxy_t));
 
     proxy->event_id = EV_PROXY;
     proxy->c2s = queue_new();

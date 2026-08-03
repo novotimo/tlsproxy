@@ -66,6 +66,9 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
         return TPX_FAILURE;
     }
 
+    memcpy((void *)&proxy->client_addr, (void *)&addr, addrlen);
+    proxy->client_addrlen = addrlen;
+
     tpx_err_t retval = proxy_add_to_epoll(proxy, epollfd);
     if (retval == TPX_FAILURE) {
         // Need to call with epollfd=-1 to show that the sockets aren't in epoll
