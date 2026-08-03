@@ -345,10 +345,9 @@ void parent_loop(tpx_config_t **config_,
 
                         continue;
                     } else if (si.ssi_signo == SIGHUP) {
-                        if (handle_reload(config_, logfd_, pids_) == 1) {
+                        if (handle_reload(config_, logfd_, pids_) == 1)
                             finishing = 1;
-                            continue;
-                        }
+                        continue;
                     } else if (si.ssi_signo == SIGPIPE) {
                         // All my homies hate SIGPIPE
                         continue;
