@@ -694,6 +694,12 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     // This could be done better, I imagine. Make sure to watch config.c for
     // changes to the logic in tpx_validate_conf
+    if (new_config->listeners_count < 1) {
+        log_system_err_m_ex(
+            *logfd, LL_ERROR, "Couldn't reload config", "No listeners provided");
+        goto cleanup_conf;
+    }
+
     for (size_t i=0; i<new_config->listeners_count; ++i) {
         const tpx_listen_conf_t *listen_conf = &new_config->listeners[i];
         if (!listen_conf->cert_chain && !listen_conf->cacerts) {
