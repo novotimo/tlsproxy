@@ -749,6 +749,13 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
         SSL_CTX_free(ssl_ctx);
     }
 
+    // Do this before clearing our old config, because it can fail
+    pid_t *new_pids = calloc((*config)->nworkers, sizeof(pid_t));
+    if (!new_pids) {
+        perror("Couldn't allocate PID list");
+        goto restore_shmem;
+    }
+
     // Now we're fully convinced our new config is good
     size_t old_workers = (*config)->nworkers;
     cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)*config, 0);
@@ -757,11 +764,6 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
     *config = new_config;
     *logfd = new_logfd;
 
-    pid_t *new_pids = calloc((*config)->nworkers, sizeof(pid_t));
-    if (!new_pids) {
-        perror("Couldn't allocate PID list");
-        goto restore_shmem;
-    }
 
     for (size_t i=0; i<old_workers; ++i)
         kill((*pids)[i], SIGHUP);
