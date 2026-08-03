@@ -9,6 +9,7 @@ that enforced the floor. Usage:
     python3 .github/scripts/coverage_badge.py coverage.json coverage.svg
 """
 import json
+import os
 import sys
 
 # shields.io's palette, so the badge sits next to the others without clashing.
@@ -62,7 +63,13 @@ def main():
     if len(sys.argv) != 3:
         sys.exit("usage: coverage_badge.py <gcovr-json-summary> <out.svg>")
 
-    with open(sys.argv[1]) as fh:
+    in_path = sys.argv[1]
+    out_path = sys.argv[2]
+
+    if not os.path.exists(in_path):
+        sys.exit(f"input file not found: {in_path}")
+
+    with open(in_path) as fh:
         summary = json.load(fh)
 
     # gcovr writes line_percent as a float; round the way the floor check does.
@@ -85,10 +92,15 @@ def main():
         value_t=(value_w - 10) * 10,
     )
 
-    with open(sys.argv[2], "w") as fh:
+    # ensure output directory exists
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    with open(out_path, "w") as fh:
         fh.write(svg)
 
-    print(f"coverage {pct}% -> {sys.argv[2]}")
+    print(f"coverage {pct}% -> {out_path}")    
 
 
 if __name__ == "__main__":
