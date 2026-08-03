@@ -115,11 +115,11 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
     int retcode = connect(proxy->serv_fd,
                           (struct sockaddr *)&proxy->listener->peer_addr,
                           proxy->listener->peer_addrlen);
-    if (retcode == -1 && errno != EINPROGRESS) {
+    if (retcode == -1 && errno != EINPROGRESS && errno != EALREADY) {
         log_proxy(LL_ERROR, proxy, "ioerror", "Couldn't connect socket",
                   strerror(errno));
         return TPX_FAILURE;
-    } else if (retcode == -1 && errno == EINPROGRESS) {
+    } else if (retcode == -1 && (errno == EINPROGRESS || errno == EALREADY)) {
         if (proxy->state == PS_CLIENT_CONNECTED) {
             // This is the first time we've tried this, need to set a timeout
             // Hardcoded to 3 seconds for now
