@@ -60,6 +60,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     proxy_t *proxy = create_proxy(conn_sock, ssl,
                                   listen, listen->config->connect_timeout);
     if (!proxy) {
+        close(conn_sock);
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");
         return TPX_FAILURE;

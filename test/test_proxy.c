@@ -457,12 +457,15 @@ static void create_proxy_failure_does_not_log_null_proxy(void **state) {
         assert_non_null(log_proxy_log.proxies[i]);
 }
 
-/* The failure branch closes serv_fd and forgets client_fd, and handle_accept()
-   does not close it either - it only does SSL_free() and returns TPX_FAILURE
-   (src/listen.c:handle_accept()). So the accepted socket leaks on every failed
-   connection, this time holding a client connection open as well as a
-   descriptor. */
-static void create_proxy_failure_closes_accepted_fd(void **state) {
+/* The accepted fd belongs to handle_accept() until a proxy is successfully
+   built around it: on failure create_proxy() hands back NULL and the caller
+   closes it (src/listen.c:handle_accept(), pinned from the other side by
+   test_listen.c:handle_accept_closes_fd_when_create_proxy_fails). So the
+   failure branch must close the backend socket it opened itself and must leave
+   the client fd strictly alone - closing it here too would make every failed
+   connection a double close, and on a busy worker the second close lands on
+   whatever descriptor the number has since been recycled to. */
+static void create_proxy_failure_closes_only_the_socket_it_opened(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
     will_return(__wrap_fcntl, 0);
@@ -472,7 +475,7 @@ static void create_proxy_failure_closes_accepted_fd(void **state) {
 
     assert_null(create_proxy(42, NULL, make_listener(), 5));
     assert_true(was_closed(43));
-    assert_true(was_closed(42));
+    assert_false(was_closed(42));
 }
 
 /* create_proxy() allocates with malloc() and assigns nine of the eleven
@@ -1046,8 +1049,9 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(create_proxy_failure_does_not_log_null_proxy,
                                reset_recorders),
-        cmocka_unit_test_setup(create_proxy_failure_closes_accepted_fd,
-                               reset_recorders),
+        cmocka_unit_test_setup(
+            create_proxy_failure_closes_only_the_socket_it_opened,
+            reset_recorders),
         cmocka_unit_test_setup(create_proxy_initialises_client_addr,
                                reset_recorders),
 

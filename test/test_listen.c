@@ -443,17 +443,16 @@ static void handle_accept_closes_fd_when_ssl_set_fd_fails(void **state) {
     assert_true(was_closed(ACCEPTED_FD));
 }
 
-/* This is the live one. create_proxy() returns NULL whenever connect() to the
-   backend fails outright - a refused connection, no route, the backend simply
-   being down - and on that path it closes the backend socket it opened but
-   never touches the client fd it was handed. handle_accept() then frees the
-   SSL object and returns, and the client fd is stranded.
+/* create_proxy() returns NULL whenever connect() to the backend fails outright
+   - a refused connection, no route, the backend simply being down - and on
+   that path it closes the backend socket it opened but deliberately leaves the
+   client fd alone (test_proxy.c:create_proxy_failure_closes_only_the_socket_
+   it_opened). Ownership of the accepted fd therefore stays here until a proxy
+   exists to take it, and handle_accept() has to close it before returning.
 
-   So: backend down, clients still arriving, one descriptor burned per attempt
-   until the worker hits EMFILE, at which point accept() starts failing and the
-   worker stops serving the connections it could still have served. No debug
-   build required and no attacker required either - an outage on the far side
-   is enough. */
+   Left undone this is a descriptor burned per attempt with the backend down,
+   until the worker hits EMFILE and accept() starts failing, at which point it
+   stops serving the connections it could still have served. */
 static void handle_accept_closes_fd_when_create_proxy_fails(void **state) {
     (void)state;
     accept_up_to_ssl();
@@ -468,8 +467,8 @@ static void handle_accept_closes_fd_when_create_proxy_fails(void **state) {
     assert_true(was_closed(ACCEPTED_FD));
 }
 
-/* The other half of the same path, pinned separately so that fixing the leak
-   above cannot quietly introduce a double free of the SSL object. */
+/* The other half of the same path, pinned separately so that the close above
+   cannot quietly grow into a double free of the SSL object. */
 static void handle_accept_frees_ssl_when_create_proxy_fails(void **state) {
     (void)state;
     accept_up_to_ssl();
