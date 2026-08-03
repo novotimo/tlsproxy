@@ -202,7 +202,8 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
         proxy->timer_set = 0;
     }
 
-    SSL_shutdown(proxy->ssl);
+    if (proxy->ssl)
+        SSL_shutdown(proxy->ssl);
 
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
