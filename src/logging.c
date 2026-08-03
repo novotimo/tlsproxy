@@ -144,6 +144,7 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 
         size_t ntowrite = MIN(len_to_end, linelen);
         ssize_t nwritten;
+        errno = 0;
 
         while (ntowrite > 0 &&
                ((nwritten = write(logfd, &logger->log_buf[logger->read_idx],
