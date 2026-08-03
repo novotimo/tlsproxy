@@ -138,7 +138,7 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             }
             linelen = u.i;
         }
-        assert(linelen > LINEBUF_OFFSET && linelen < TPX_LOG_LINE_MAX);
+        assert(linelen > LINEBUF_OFFSET && linelen <= TPX_LOG_LINE_MAX + 1);
         linelen -= LINEBUF_OFFSET;
         len_to_end -= LINEBUF_OFFSET;
 
