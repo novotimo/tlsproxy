@@ -204,12 +204,16 @@ static uint64_t take_event_count(void) {
     return count;
 }
 
-// The master's whole job: learn how many messages are queued, then drain them.
+/* The master's whole job: learn how many messages are queued, then drain them.
+   write_logs() returns how many of those events it actually got out, and
+   app/main.c:parent_loop() subtracts that from the count to decide what to
+   re-arm the eventfd with, so the return value is part of the contract now and
+   not a diagnostic. Returning it here lets every caller below assert on it. */
 static uint64_t drain_logger(void) {
     uint64_t count = take_event_count();
-    if (count)
-        write_logs(logpipe[1], logger, count);
-    return count;
+    if (!count)
+        return 0;
+    return write_logs(logpipe[1], logger, count);
 }
 
 static void assert_contains(const char *haystack, const char *needle) {
@@ -690,19 +694,150 @@ static void write_logs_keeps_the_read_index_on_a_message_boundary(
     assert_int_equal(logger->read_idx, start);
 }
 
+/* Rewinding read_idx is only half of it: write_logs also has to put back the
+   four-byte length prefix it consumed, because read_idx now points at where
+   that prefix used to be. The rollback in write_logs() does write four bytes
+   there --
+
+       union { char b[LINEBUF_OFFSET]; uint32_t i; } u;
+       for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
+           DEC_WRAP(logger->read_idx);
+           logger->log_buf[logger->read_idx] = u.b[LINEBUF_OFFSET-j-1];
+       }
+
+   -- but u is declared and never assigned, so the bytes are indeterminate. The
+   message that was supposed to survive the failed write is left with a garbage
+   length in front of it.
+
+   Measured rather than assumed: transcribing that loop into a standalone
+   program and compiling it warns 'u may be used uninitialized', and reading the
+   prefix back gives whatever was on the stack. In this tree src/logging.c is
+   built at -O0 (UNIT_TESTING forces it), and GCC does not run that analysis at
+   -O0, which is why the build is silent. At -O2 the project's own warning set
+   catches it, and -Werror would stop the build.
+
+   The test above passes because it only looks at the index. This one looks at
+   what the index points to: drain again against a working fd and the message
+   should come back intact. */
+static void write_logs_preserves_the_message_a_failed_write_rolled_back(
+    void **state) {
+    (void)state;
+    log_system_err(LL_ERROR, "survives a failed write", TPX_ERR_PLAIN);
+    uint64_t queued = take_event_count();
+
+    int readonly_fd = open("/dev/null", O_RDONLY);
+    assert_int_not_equal(readonly_fd, -1);
+    assert_int_equal(write_logs(readonly_fd, logger, queued), 0);
+    close(readonly_fd);
+
+    // Same message, same count, now against an fd that works.
+    assert_int_equal(write_logs(logpipe[1], logger, queued), queued);
+    assert_true(read_logs() > 0);
+    assert_contains(logtext, "error_msg=\"survives a failed write\"");
+}
+
+/* The count write_logs returns is what app/main.c:parent_loop() re-arms the
+   eventfd with: it does `count -= write_logs(...)` and writes any remainder
+   back. A return value that is too high loses log lines silently; one that is
+   too low re-emits events for messages already written, and the next drain
+   walks past the end of the queued data. */
+static void write_logs_reports_how_many_events_it_wrote(void **state) {
+    (void)state;
+    log_system_err(LL_ERROR, "first", TPX_ERR_PLAIN);
+    log_system_err(LL_ERROR, "second", TPX_ERR_PLAIN);
+    log_system_err(LL_ERROR, "third", TPX_ERR_PLAIN);
+
+    assert_int_equal(write_logs(logpipe[1], logger, take_event_count()), 3);
+    assert_int_equal(logger->read_idx, logger->write_idx);
+}
+
+/* The other half of that contract: nothing got out, so nothing may be
+   reported as written, or parent_loop() drops the message from the eventfd
+   count and no later drain ever retries it. */
+static void write_logs_reports_nothing_written_when_the_fd_is_bad(
+    void **state) {
+    (void)state;
+    log_system_err(LL_ERROR, "not going anywhere", TPX_ERR_PLAIN);
+
+    int readonly_fd = open("/dev/null", O_RDONLY);
+    assert_int_not_equal(readonly_fd, -1);
+    assert_int_equal(write_logs(readonly_fd, logger, take_event_count()), 0);
+    close(readonly_fd);
+}
+
+/* write_logs' retry loop is
+
+       while (ntowrite > 0 &&
+              ((nwritten = write(...)) > 0 || errno == EINTR)) {
+           if (errno == EINTR) continue;
+           ... advance read_idx, decrement ntowrite ...
+       }
+
+   errno is never cleared before the write, and errno is only ever *set* on
+   failure -- a successful write leaves whatever was there. So if errno already
+   holds EINTR when write_logs is entered, the first successful write still
+   takes the `continue`, skips the accounting, and writes the same bytes again
+   with ntowrite unchanged. That is an unbounded loop in the master, which is
+   the process that reaps workers and handles signals.
+
+   Measured: a successful write() into a pipe with errno preset to EINTR leaves
+   errno == EINTR afterwards on this glibc. Stale EINTR is not exotic in this
+   process either -- parent_loop() sits in epoll_wait() and read()s a signalfd,
+   both of which return EINTR in normal operation.
+
+   Run in a child under alarm() so that a hang is reported as a failed test
+   rather than hanging the suite. /dev/null is the write target because it
+   never fills, so a spinning loop spins rather than blocking. */
+static void write_logs_does_not_spin_on_a_stale_eintr(void **state) {
+    (void)state;
+    log_system_err(LL_ERROR, "stale errno", TPX_ERR_PLAIN);
+    uint64_t queued = take_event_count();
+
+    int devnull = open("/dev/null", O_WRONLY);
+    assert_int_not_equal(devnull, -1);
+
+    pid_t child = fork();
+    assert_int_not_equal(child, -1);
+    if (child == 0) {
+        alarm(5);
+        errno = EINTR;          // as if an epoll_wait() had just been interrupted
+        write_logs(devnull, logger, queued);
+        _exit(0);
+    }
+
+    int wstatus = 0;
+    assert_int_equal(waitpid(child, &wstatus, 0), child);
+    close(devnull);
+
+    if (WIFSIGNALED(wstatus) && WTERMSIG(wstatus) == SIGALRM)
+        fail_msg("write_logs() did not terminate: a stale EINTR sends the "
+                 "retry loop round forever without advancing read_idx");
+    assert_true(WIFEXITED(wstatus));
+}
+
 /* A short write is what the kernel does to a regular file when the filesystem
    underneath it runs out of room part way through a line, which is the only
    kind of fd app/main.c:init_logger() ever opens. RLIMIT_FSIZE reproduces it
    exactly and reversibly; a small non-blocking pipe does not, because Linux
    answers EAGAIN rather than taking what fits.
 
-   write_logs advances read_idx by however much the kernel took and then moves
-   on to the next message, so the tail of the line is never written and
-   read_idx is left inside a message. It fails on write_logs' own assert that
-   read_idx sits just past a NUL rather than on the assertion below -- that
-   assert is the invariant this breaks, and it is the part NDEBUG removes from
-   the Release build, where the same input silently desyncs the log stream
-   instead. */
+   write_logs now retries a short write in a loop, which is the right shape and
+   fixes the case where the filesystem takes part of a line and then accepts the
+   rest. What it does not fix is the case here, where the retry itself fails:
+   RLIMIT_FSIZE takes 96 bytes of the line and then refuses the remainder with
+   EFBIG for good.
+
+   At that point the rollback runs, and it rewinds read_idx by exactly
+   LINEBUF_OFFSET -- back over the length prefix, not back over the 96 bytes
+   already written. read_idx is left 92 bytes inside the message body, pointing
+   at four bytes of indeterminate data written by the uninitialised union (see
+   write_logs_preserves_the_message_a_failed_write_rolled_back). The next drain
+   reads those four bytes as a length.
+
+   So this test still fails, and it fails one step further along than it used
+   to: not "the tail was never written" but "the rollback landed mid-message".
+   Debug trips write_logs' own assert that read_idx sits just past a NUL;
+   Release has NDEBUG and silently desyncs the stream instead. */
 static void write_logs_finishes_a_line_the_kernel_only_partly_took(
     void **state) {
     (void)state;
@@ -1358,6 +1493,10 @@ int main(void) {
         T(write_logs_returns_a_message_whose_body_wrapped),
         T(write_logs_returns_a_message_whose_header_wrapped),
         T(write_logs_keeps_the_read_index_on_a_message_boundary),
+        T(write_logs_preserves_the_message_a_failed_write_rolled_back),
+        T(write_logs_reports_how_many_events_it_wrote),
+        T(write_logs_reports_nothing_written_when_the_fd_is_bad),
+        T(write_logs_does_not_spin_on_a_stale_eintr),
         T(write_logs_finishes_a_line_the_kernel_only_partly_took),
         T(write_logs_accepts_the_longest_line_that_can_be_built),
         T(write_logs_refuses_to_run_with_logging_disabled),
