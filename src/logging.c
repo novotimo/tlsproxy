@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <err.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
@@ -777,9 +778,15 @@ int _linebuf_append_cb(const char *str, size_t len, void *u) {
 
 void _write_linebuf(logger_t *logger, linebuf_t *line) {
     line->u.buf[line->u.len++] = '\n';
-    
-    if (pthread_mutex_lock(&logger->write_lock)) {
-        perror("pthread_mutex_lock when logging");
+
+    int ret = pthread_mutex_lock(&logger->write_lock);
+    if (ret == EOWNERDEAD) {
+        // write_idx is only changed (atomically) after all bytes are written,
+        // we don't need to do anything. For droplines, this would cause at most
+        // one extra log message printed (it's for rate limiting error messages)
+        pthread_mutex_consistent(&logger->write_lock);
+    } else if (ret) {
+        fprintf(stderr, "pthread_mutex_lock when logging: %s", strerror(ret));
         return;
     }
     

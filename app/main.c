@@ -145,6 +145,7 @@ int init_logger(tpx_config_t *config) {
     pthread_mutexattr_t attrs;
     pthread_mutexattr_init(&attrs);
     pthread_mutexattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
+    pthread_mutexattr_setrobust(&attrs, PTHREAD_MUTEX_ROBUST);
     pthread_mutex_init(&g_shmem->logger.write_lock, &attrs);
     pthread_mutexattr_destroy(&attrs);
     return logfd;
