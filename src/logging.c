@@ -878,5 +878,5 @@ int _hex_c(const char c, char **outptr, const char *endptr) {
 
 int _ringbuf_fits(logger_t *logger, uint32_t len) {
     return(((TPX_LOGBUF_SIZE + logger->read_idx - logger->write_idx - 1)
-           % TPX_LOGBUF_SIZE) >= len);
+           % TPX_LOGBUF_SIZE) >= len + 1);
 }
