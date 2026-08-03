@@ -588,7 +588,7 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
         for (int i=0; i<sk_X509_num(certs); ++i)
             log_cert_load(logfd, LL_INFO, sk_X509_value(certs, i), 0);
     } else {
-        _fatal(logfd, "Config contains both cert-chain and cacerts",
+        _fatal(logfd, "Config contains neither cert-chain nor cacerts",
                TPX_ERR_PLAIN);
         goto cleanup_fail;
     }
