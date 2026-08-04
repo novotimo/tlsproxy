@@ -30,6 +30,11 @@ typedef enum proxy_state_e {
     PS_READY, /**< @brief Both client and server are ready to rumble */
     PS_SERVER_DISCONNECTED, /**< @brief Server disconnected, pending client
                              * disconnect (it needs to await SSL_shutdown) */
+    PS_CLIENT_FLUSHED, /**< @brief All pending data has been flushed to the
+                        * client, so we can now send our close_notify */
+    PS_CLOSE_NOTIFY_SENT, /**< @brief We've sent our close_notify, so all we
+                           * need to do is set our linger timer and wait for the
+                           * client to die so we can gracefully shut down */
     PS_CLIENT_DISCONNECTED /**< @brief Client disconnected, can just destruct
                             * the proxy and close sockets */
 } proxy_state_t;
@@ -66,11 +71,21 @@ typedef struct proxy_s {
     socklen_t client_addrlen; /**< @brief Length of client_addr */
     
     ngx_rbtree_node_t timer; /**< @brief The time when this event expires */
+    uint64_t shutdown_time; /**< @brief The time when a proxy definitely has
+                             * to shut down */
+    uint64_t shutdown_timeout; /**< @brief The amout of time a proxy has
+                                * to shut down before it's forced to */
+    uint64_t shutdown_interval; /**< @brief The amount of time between client
+                                 * messages that needs to elapse after the
+                                 * server socket is shut down before we
+                                 * shut down the client connection */
     
     SSL *ssl; /**< @brief The SSL session context */
 
     unsigned int timer_set : 1;
     unsigned int hand_shaken : 1; /**< @brief Whether the handshake is done */
+    unsigned int client_notified_close : 1; /**< @brief whether our client
+                                             * sent us a close_notify */
     
     proxy_state_t state; /**< @brief The current proxy state */
 } proxy_t;
@@ -114,7 +129,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
                       unsigned int conn_timeout,
-                      int keepidle, int keepintvl, int keepcnt);
+                      int keepidle, int keepintvl, int keepcnt,
+                      uint64_t shutdown_timeout, uint64_t shutdown_interval);
 
 /**
  * @brief Add client and server sockets of proxy to epoll.
@@ -146,6 +162,16 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout);
 tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client);
 
 /**
+ * @brief Handle a read from the client or server socket, sending the
+ *        received data to Narnia.
+ * @param proxy The proxy to read data into
+ * @param is_client If this is 1, communicate with TLS to client. If it's 0,
+ *        communicate in plaintext with the server.
+ * @return TPX_FAILURE on failure and TPX_SUCCESS on success.
+ */
+tpx_err_t proxy_ignore_read(proxy_t *proxy, int is_client);
+
+/**
  * @brief Handle a write to the client or server socket.
  * @param proxy The proxy to write data from
  * @param is_client If this is 1, communicate with TLS to client. If it's 0,
@@ -170,10 +196,8 @@ tpx_err_t proxy_process_data(proxy_t *proxy, int is_client);
  * @brief Used to either completely close a proxy or initiate graceful shutdown.
  * @param proxy The proxy to shut down. This will be freed.
  * @param epollfd The epoll fd, used to delete the proxy from epoll.
- * @return TPX_AGAIN when graceful shutdown is pending, or TPX_CLOSED when
- *         the proxy has been closed successfully and the ctx is freed.
  */
-tpx_err_t proxy_close(proxy_t *proxy, int epollfd);
+void proxy_close(proxy_t *proxy, int epollfd);
 
 /** @brief Create a nonblocking socket to connect to. */
 int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt);
@@ -185,7 +209,7 @@ int outbuf_empty(proxy_t *proxy, int is_client);
 void proxy_init_timeouts(void);
 
 /** @brief Handle the proxy getting a timeout. */
-tpx_err_t proxy_handle_timeout(proxy_t *proxy, int epollfd);
+void proxy_handle_timeout(proxy_t *proxy, int epollfd);
 
 tpx_err_t proxy_handle_ssl_failure(proxy_t *proxy, int retcode);
 

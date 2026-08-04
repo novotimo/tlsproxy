@@ -41,7 +41,6 @@ extern uint32_t nproxies;
     WRAP_FUN(socket, int, (int domain, int type, int protocol),      \
              (domain, type, protocol))                               \
     WRAP_FUN(SSL_free, void, (SSL *p), (p))            \
-    WRAP_FUN(SSL_shutdown, int, (SSL *p), (p))            \
     WRAP_FUN(SSL_is_init_finished, int, (const SSL *p), (p))       \
     WRAP_FUN_ERR(connect, int, (int sockfd, const struct sockaddr *addr, \
                                 socklen_t addrlen),                      \
@@ -219,6 +218,23 @@ static struct {
     int nbytes[MAX_RECORDED];
 } ssl_write_log;
 
+/* SSL_shutdown is recorded for the same reason: proxy_close() is a destructor
+   now, and "it did not try to shut the session down" is a claim about a call
+   that did not happen. Defaults to 1 so an unmocked call cannot reach
+   __real_SSL_shutdown with a fake SSL pointer. */
+static struct {
+    unsigned int calls;
+} ssl_shutdown_log;
+
+int __wrap_SSL_shutdown(SSL *ssl);
+int __wrap_SSL_shutdown(SSL *ssl) {
+    (void)ssl;
+    ssl_shutdown_log.calls++;
+    if (has_mock())
+        return (int)mock();
+    return 1;
+}
+
 ssize_t __wrap_SSL_write(SSL *ssl, const void *buf, int num);
 ssize_t __wrap_SSL_write(SSL *ssl, const void *buf, int num) {
     (void)ssl; (void)buf;
@@ -313,6 +329,7 @@ static int reset_recorders(void **state) {
     memset(&close_log, 0, sizeof(close_log));
     memset(&setsockopt_log, 0, sizeof(setsockopt_log));
     memset(&ssl_write_log, 0, sizeof(ssl_write_log));
+    memset(&ssl_shutdown_log, 0, sizeof(ssl_shutdown_log));
     memset(&epoll_log, 0, sizeof(epoll_log));
     memset(&log_proxy_log, 0, sizeof(log_proxy_log));
     assert_fail_calls = 0;
@@ -484,7 +501,8 @@ static void create_proxy_ready_when_connect_completes(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
 
-    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3);
+    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000);
     assert_non_null(p);
     assert_int_equal(p->event_id, EV_PROXY);
     assert_non_null(p->c2s);
@@ -508,7 +526,8 @@ static void create_proxy_pending_when_connect_blocks(void **state) {
     will_return(__wrap_connect, EINPROGRESS);
     will_return(__wrap_ngx_rbtree_insert, NULL);
 
-    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3);
+    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000);
     assert_non_null(p);
     assert_int_equal(p->state, PS_SERVER_CONNECTING);
     assert_int_equal(p->timer_set, 1);
@@ -525,13 +544,15 @@ static void create_proxy_null_when_connect_fails(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000));
 }
 
 static void create_proxy_null_when_malloc_fails(void **state) {
     (void)state;
     malloc_fails_next = 1;
-    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000));
     // Nothing was opened, so nothing may be closed or counted.
     assert_int_equal(close_log.calls, 0);
 }
@@ -552,7 +573,8 @@ static void create_proxy_failure_does_not_leak_nproxies(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000));
     assert_int_equal(nproxies, before);
 }
 
@@ -571,7 +593,8 @@ static void create_proxy_failure_does_not_log_null_proxy(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000));
     for (unsigned int i = 0; i < log_proxy_log.calls && i < MAX_RECORDED; ++i)
         assert_non_null(log_proxy_log.proxies[i]);
 }
@@ -593,7 +616,8 @@ create_proxy_failure_closes_only_the_socket_it_opened(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000));
     assert_true(was_closed(43));
     assert_false(was_closed(42));
 }
@@ -618,7 +642,8 @@ static void create_proxy_initialises_client_addr(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
 
-    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3);
+    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
+                              30000, 5000);
     assert_non_null(p);
     assert_int_equal(p->client_addr.ss_family, AF_UNSPEC);
     assert_int_equal(p->client_addrlen, 0);
@@ -736,62 +761,66 @@ static void add_to_epoll_fails_on_server_registration(void **state) {
 /* proxy_close()                                                       */
 /* ------------------------------------------------------------------ */
 
-/* SSL_shutdown() is armed even though this is the client-disconnected path:
-   proxy_close() sends close_notify on every state now, not only on
-   PS_SERVER_DISCONNECTED, and __wrap_SSL_shutdown forwards to the real one
-   when no mock is queued - which would hand OpenSSL the 0x7 below. */
+/* proxy_close() returns void now, so nproxies is what says the release
+   happened - and it is the thing worth watching anyway, since
+   app/main.c:child_loop() will not finish a graceful shutdown until it
+   reaches zero. */
 static void close_frees_proxy_with_ssl(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
     p->ssl = (SSL *)0x7;
+    uint32_t before = nproxies;
 
-    will_return(__wrap_SSL_shutdown, 1);
     will_return(__wrap_SSL_free, NULL);
-    assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
+    proxy_close(p, -1);
+    assert_int_equal(nproxies, before - 1);
 }
 
 static void close_frees_proxy_without_ssl(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
-    assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
+    uint32_t before = nproxies;
+
+    proxy_close(p, -1);
+    assert_int_equal(nproxies, before - 1);
 }
 
-static void close_completes_when_shutdown_finishes(void **state) {
+/* proxy_close() is a destructor and nothing else: emitting the close_notify
+   belongs to handle_proxy()'s shutdown states, which are the only place that
+   can flush s2c first and then wait out the peer's reply.
+
+   Re-adding an SSL_shutdown() here is the plausible-looking regression, and it
+   is the one that breaks against a pipelining client: by this point the peer's
+   close_notify has usually already been consumed, so a second call either
+   duplicates work or - if the peer sent anything after its alert - fails with
+   "application data after close notify" and poisons the SSL object.
+
+   PS_CLOSE_NOTIFY_SENT specifically, because that is the state where the alert
+   demonstrably has already gone out. */
+static void close_does_not_shut_the_session_down_itself(void **state) {
     (void)state;
-    proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
+    proxy_t *p = new_proxy(PS_CLOSE_NOTIFY_SENT);
     p->ssl = (SSL *)0x7;
 
-    will_return(__wrap_SSL_shutdown, 1);
     will_return(__wrap_SSL_free, NULL);
-    assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
+    proxy_close(p, -1);
+    assert_int_equal(ssl_shutdown_log.calls, 0);
 }
 
-/* SSL_shutdown() returning 0 means our close_notify went out but the peer's
-   has not come back. proxy_close() deliberately does not wait for it, and this
-   pins that it cannot start: an earlier version returned TPX_AGAIN here and
-   kept the proxy alive, which meant a peer that never replied held the
-   proxy_t, both descriptors and its slot in nproxies indefinitely - and
-   nproxies is what app/main.c:child_loop() waits on to finish a graceful
-   shutdown, so one silent peer was enough to make SIGTERM never complete.
-
-   The wait bought nothing to offset that. RFC 5246 7.2.1 requires only that
-   close_notify be sent: "it is not required for the initiator of the close to
-   wait for the responding close_notify alert before closing the read side",
-   and the peer's reply has nothing to tell a proxy that is about to close both
-   descriptors and discard the session.
-
-   Descriptors are left at the -1 new_proxy() gives them: the claim here is the
-   return value, and close_closes_both_fds() owns the fd claim. */
-static void close_completes_when_the_peer_never_replies(void **state) {
+/* The linger timer is what bounds a peer that never sends its close_notify
+   back. Before there was one, proxy_close() returned TPX_AGAIN in that case
+   and kept the proxy alive indefinitely - holding the proxy_t, both
+   descriptors and its nproxies slot, which meant one silent peer was enough to
+   stop SIGTERM ever completing. Expiry has to release unconditionally. */
+static void timeout_releases_the_proxy(void **state) {
     (void)state;
-    proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
+    proxy_t *p = new_proxy(PS_CLOSE_NOTIFY_SENT);
     p->ssl = (SSL *)0x7;
+    uint32_t before = nproxies;
 
-    will_return(__wrap_SSL_shutdown, 0);
     will_return(__wrap_SSL_free, NULL);
-
-    assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
-    assert_int_equal(close_log.calls, 0);
+    proxy_handle_timeout(p, -1);
+    assert_int_equal(nproxies, before - 1);
 }
 
 static void close_closes_both_fds(void **state) {
@@ -802,7 +831,7 @@ static void close_closes_both_fds(void **state) {
 
     will_return(__wrap_close, 0);
     will_return(__wrap_close, 0);
-    assert_int_equal(proxy_close(p, 1), TPX_CLOSED);
+    proxy_close(p, 1);
 
     assert_int_equal(epoll_log.calls, 2);
     assert_int_equal(epoll_log.op[0], EPOLL_CTL_DEL);
@@ -822,7 +851,7 @@ static void close_skips_epoll_when_never_registered(void **state) {
 
     will_return(__wrap_close, 0);
     will_return(__wrap_close, 0);
-    assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
+    proxy_close(p, -1);
     assert_int_equal(epoll_log.calls, 0);
 }
 
@@ -866,14 +895,60 @@ static void handle_proxy_closes_on_connect_error(void **state) {
 
 static void handle_proxy_closes_when_disconnected(void **state) {
     (void)state;
-    proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
+    proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
     assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_SERVER), TPX_CLOSED);
 }
 
+/* PS_SERVER_DISCONNECTED used to be terminal, so this same call used to return
+   TPX_CLOSED. It is a working state now: the backend fd has already been
+   closed by the time the state is entered, so a server-tagged event left over
+   in the same epoll_wait batch refers to a descriptor that is gone and must be
+   dropped rather than acted on. */
+static void handle_proxy_ignores_server_events_while_shutting_down(void **st) {
+    (void)st;
+    proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_SERVER), TPX_SUCCESS);
+    free_proxy(p);
+}
+
+/* TAG_SERVER deliberately: handle_proxy() drops every server-tagged event once
+   the shutdown states are reachable, and for one revision it did so above the
+   state validation, so a corrupt state arriving on the server fd was accepted
+   in silence. Validating in the first switch's default puts the guard above
+   that early return, which is the only ordering where both tags reach it. */
 static void handle_proxy_rejects_unknown_state(void **state) {
     (void)state;
     proxy_t *p = new_proxy((proxy_state_t)420);
     assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_SERVER), TPX_FAILURE);
+    free_proxy(p);
+}
+
+/* SSL_shutdown() reporting -1/WANT_READ means our close_notify is on the wire
+   and the peer's has not come back - the ordinary outcome, and the one the
+   whole linger phase exists to wait out. Grouping it with the fatal errors
+   tears the proxy down on the spot: no SHUT_WR, no lingering, and a close()
+   that sends RST to any client with a request still queued.
+
+   Three SSL_get_error mocks because the state machine crosses two states in
+   one call, which is the point: the alert result, then proxy_ignore_read()'s
+   own check, then proxy_handle_ssl_failure()'s. Nothing wakes this proxy again
+   on its own, so the fallthrough has to reach the lingering read here. */
+static void client_flushed_lingers_when_the_peer_has_not_replied(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_CLIENT_FLUSHED);
+    p->hand_shaken = 1;
+
+    will_return(__wrap_SSL_shutdown, -1);
+    will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_READ);
+    will_return(__wrap_SSL_read, -1);
+    will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_READ);
+    will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_READ);
+    will_return(__wrap_ngx_rbtree_delete, NULL);
+    will_return(__wrap_ngx_rbtree_insert, NULL);
+
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_CLIENT), TPX_SUCCESS);
+    assert_int_equal(p->state, PS_CLOSE_NOTIFY_SENT);
+
     free_proxy(p);
 }
 
@@ -1242,10 +1317,9 @@ int main(void) {
 
         cmocka_unit_test_setup(close_frees_proxy_with_ssl, reset_recorders),
         cmocka_unit_test_setup(close_frees_proxy_without_ssl, reset_recorders),
-        cmocka_unit_test_setup(close_completes_when_shutdown_finishes,
+        cmocka_unit_test_setup(close_does_not_shut_the_session_down_itself,
                                reset_recorders),
-        cmocka_unit_test_setup(close_completes_when_the_peer_never_replies,
-                               reset_recorders),
+        cmocka_unit_test_setup(timeout_releases_the_proxy, reset_recorders),
         cmocka_unit_test_setup(close_closes_both_fds, reset_recorders),
         cmocka_unit_test_setup(close_skips_epoll_when_never_registered,
                                reset_recorders),
@@ -1258,8 +1332,14 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(handle_proxy_closes_when_disconnected,
                                reset_recorders),
+        cmocka_unit_test_setup(
+            handle_proxy_ignores_server_events_while_shutting_down,
+            reset_recorders),
         cmocka_unit_test_setup(handle_proxy_rejects_unknown_state,
                                reset_recorders),
+        cmocka_unit_test_setup(
+            client_flushed_lingers_when_the_peer_has_not_replied,
+            reset_recorders),
         cmocka_unit_test_setup(handle_proxy_ignores_high_tag_bits,
                                reset_recorders),
 

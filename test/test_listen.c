@@ -249,11 +249,20 @@ static struct {
 } create_proxy_log;
 
 proxy_t *__real_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
-                             unsigned int conn_timeout);
+                             unsigned int conn_timeout,
+                             int keepidle, int keepintvl, int keepcnt,
+                             uint64_t shutdown_timeout,
+                             uint64_t shutdown_interval);
 proxy_t *__wrap_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
-                             unsigned int conn_timeout);
+                             unsigned int conn_timeout,
+                             int keepidle, int keepintvl, int keepcnt,
+                             uint64_t shutdown_timeout,
+                             uint64_t shutdown_interval);
 proxy_t *__wrap_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
-                             unsigned int conn_timeout) {
+                             unsigned int conn_timeout,
+                             int keepidle, int keepintvl, int keepcnt,
+                             uint64_t shutdown_timeout,
+                             uint64_t shutdown_interval) {
     if (create_proxy_log.calls < MAX_RECORDED) {
         create_proxy_log.accepted_fd[create_proxy_log.calls] = accepted_fd;
         create_proxy_log.ssl[create_proxy_log.calls] = ssl;
@@ -262,7 +271,9 @@ proxy_t *__wrap_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
     create_proxy_log.calls++;
     if (has_mock())
         return (proxy_t *)mock();
-    return __real_create_proxy(accepted_fd, ssl, listener, conn_timeout);
+    return __real_create_proxy(accepted_fd, ssl, listener, conn_timeout,
+                               keepidle, keepintvl, keepcnt,
+                               shutdown_timeout, shutdown_interval);
 }
 
 
@@ -296,14 +307,13 @@ static struct {
     int epollfd[MAX_RECORDED];
 } proxy_close_log;
 
-tpx_err_t __wrap_proxy_close(proxy_t *proxy, int epollfd);
-tpx_err_t __wrap_proxy_close(proxy_t *proxy, int epollfd) {
+void __wrap_proxy_close(proxy_t *proxy, int epollfd);
+void __wrap_proxy_close(proxy_t *proxy, int epollfd) {
     if (proxy_close_log.calls < MAX_RECORDED) {
         proxy_close_log.proxy[proxy_close_log.calls] = proxy;
         proxy_close_log.epollfd[proxy_close_log.calls] = epollfd;
     }
     proxy_close_log.calls++;
-    return TPX_CLOSED;
 }
 
 
