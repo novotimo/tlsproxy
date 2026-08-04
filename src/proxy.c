@@ -614,7 +614,7 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
     }
 
     /* This is true as proxy_handle_write is only called after proxy_handle_read */
-    assert(out_bufq->write_idx > 0);
+    assert(out_bufq->write_idx >= 0);
     
     int nsent = 0;
     size_t real_buflen = 0;
@@ -629,6 +629,10 @@ tpx_err_t proxy_handle_write(proxy_t *proxy, int is_client) {
         switch (queue_peek(out_bufq, &wbuf, &wbuflen)) {
         case TPX_FAILURE:
             log_system_err(LL_ERROR, "The buffer queue is corrupted",
+                           TPX_ERR_PLAIN);
+            return TPX_FAILURE;
+        case TPX_EMPTY:
+            log_system_err(LL_ERROR, "The buffer queue is empty",
                            TPX_ERR_PLAIN);
             return TPX_FAILURE;
         case TPX_SUCCESS:
