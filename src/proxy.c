@@ -278,6 +278,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                        uint8_t tag) {
     tpx_err_t ret = TPX_SUCCESS;
     int is_client = tag & 1;
+    int server_was_closed = proxy->serv_fd == -1;
+
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
     case PS_SERVER_CONNECTING:
@@ -322,6 +324,12 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
                     return TPX_CLOSED;
                 }
 
+                // If we got a connection reset
+                if (ret == TPX_FAILURE) {
+                    proxy_close(proxy, epollfd);
+                    return TPX_CLOSED;
+                }
+
                 handle_server_disconnected(proxy);
             }
 
@@ -339,8 +347,10 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         return TPX_FAILURE;
     }
 
-    // Ignore all server events if we're in the last 3 graceful shutdown states
-    if (!is_client && proxy->serv_fd == -1)
+    // Ignore all server events if we're in the last 3 graceful shutdown states.
+    // The event that actually closes the server fd is a server event, so
+    // we needed to save it before
+    if (!is_client && server_was_closed)
         return TPX_SUCCESS;
 
     // Save this for later when we want to shut down the SSL context
