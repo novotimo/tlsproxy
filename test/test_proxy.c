@@ -893,10 +893,41 @@ static void handle_proxy_closes_on_connect_error(void **state) {
     assert_int_equal(handle_proxy(p, -1, EPOLLOUT, TAG_SERVER), TPX_CLOSED);
 }
 
-static void handle_proxy_closes_when_disconnected(void **state) {
+/* PS_CLIENT_DISCONNECTED now carries two situations that want opposite
+   handling, and client_notified_close is what separates them. Without the
+   flag the client is *gone* - no close_notify, nothing left to deliver to -
+   so once c2s is flushed there is nothing to wait for and the proxy is
+   released. This is the terminal reading the state used to have
+   unconditionally. */
+static void handle_proxy_closes_when_the_client_is_gone(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_SERVER), TPX_CLOSED);
+    p->hand_shaken = 1;
+
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_CLIENT), TPX_CLOSED);
+}
+
+/* With the flag, the client merely half-closed: it will send no more but is
+   still reading, and the backend has not answered yet. Releasing here is what
+   the earlier revision did, and it delivered nothing. The proxy has to stay
+   alive, in this same state, pumping serv_fd -> s2c -> client until the
+   backend EOFs - PS_SERVER_DISCONNECTED's body never touches the server fd,
+   so advancing the state early loses the response. */
+static void handle_proxy_keeps_pumping_after_a_client_half_close(void **st) {
+    (void)st;
+    proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
+    p->hand_shaken = 1;
+    p->client_notified_close = 1;
+
+    // Backend has nothing to say yet.
+    will_return(__wrap_read, -1);
+    will_return(__wrap_read, EAGAIN);
+
+    assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_CLIENT), TPX_SUCCESS);
+    assert_int_equal(p->state, PS_CLIENT_DISCONNECTED);
+    assert_int_equal(close_log.calls, 0);
+
+    free_proxy(p);
 }
 
 /* PS_SERVER_DISCONNECTED used to be terminal, so this same call used to return
@@ -937,6 +968,10 @@ static void client_flushed_lingers_when_the_peer_has_not_replied(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_CLIENT_FLUSHED);
     p->hand_shaken = 1;
+    /* The shutdown ceiling is armed on entry to PS_SERVER_DISCONNECTED, so any
+       proxy that has reached PS_CLIENT_FLUSHED has a node in the tree - and
+       PS_CLOSE_NOTIFY_SENT only deletes it when timer_set says so. */
+    p->timer_set = 1;
 
     will_return(__wrap_SSL_shutdown, -1);
     will_return(__wrap_SSL_get_error, SSL_ERROR_WANT_READ);
@@ -1330,8 +1365,11 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(handle_proxy_closes_on_connect_error,
                                reset_recorders),
-        cmocka_unit_test_setup(handle_proxy_closes_when_disconnected,
+        cmocka_unit_test_setup(handle_proxy_closes_when_the_client_is_gone,
                                reset_recorders),
+        cmocka_unit_test_setup(
+            handle_proxy_keeps_pumping_after_a_client_half_close,
+            reset_recorders),
         cmocka_unit_test_setup(
             handle_proxy_ignores_server_events_while_shutting_down,
             reset_recorders),

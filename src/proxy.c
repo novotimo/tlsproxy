@@ -32,6 +32,23 @@ uint32_t nproxies = 0;
 
 int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt);
 
+static void handle_server_disconnected(proxy_t *proxy) {
+    // proxy_handle_read has just finished, and we've either
+    // received an error or an EOF.
+    close(proxy->serv_fd);
+    proxy->serv_fd = -1;
+
+    // We want to shutdown within `shutdown_time` seconds,
+    // whatever happens
+    assert(!proxy->timer_set);
+    proxy->timer.key = proxy->shutdown_time =
+        gettime() + proxy->shutdown_timeout * 1000;
+    ngx_rbtree_insert(&timeouts, &proxy->timer);
+    proxy->timer_set = 1;
+
+    proxy->state = PS_SERVER_DISCONNECTED;
+}
+
 
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
@@ -294,31 +311,18 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         if (0 != (events & EPOLLIN))
             ret = proxy_handle_read(proxy, is_client);
         
-        if (ret != TPX_SUCCESS) {
-            if (is_client)
+        if (ret != TPX_SUCCESS || (is_client && proxy->client_notified_close)) {
+            if (is_client) {
                 proxy->state = PS_CLIENT_DISCONNECTED;
-            else {
+            } else {
                 // If we haven't finished our handshake, just quit
                 if (!proxy->hand_shaken) {
                     shutdown(proxy->client_fd, SHUT_WR);
                     proxy_close(proxy, epollfd);
                     return TPX_CLOSED;
                 }
-                
-                // proxy_handle_read has just finished, and we've either
-                // received an error or an EOF.
-                close(proxy->serv_fd);
-                proxy->serv_fd = -1;
 
-                // We want to shutdown within `shutdown_time` seconds,
-                // whatever happens
-                assert(!proxy->timer_set);
-                proxy->timer.key = proxy->shutdown_time =
-                    gettime() + proxy->shutdown_timeout * 1000;
-                ngx_rbtree_insert(&timeouts, &proxy->timer);
-                proxy->timer_set = 1;
-                
-                proxy->state = PS_SERVER_DISCONNECTED;
+                handle_server_disconnected(proxy);
             }
 
             break;
@@ -333,16 +337,10 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         log_system_err(LL_ERROR, "Event queue corrupted: unexpected state",
                        TPX_ERR_PLAIN);
         return TPX_FAILURE;
-
-    }
-
-    if (proxy->state == PS_CLIENT_DISCONNECTED) {
-        proxy_close(proxy, epollfd);
-        return TPX_CLOSED;
     }
 
     // Ignore all server events if we're in the last 3 graceful shutdown states
-    if (!is_client)
+    if (!is_client && proxy->serv_fd == -1)
         return TPX_SUCCESS;
 
     // Save this for later when we want to shut down the SSL context
@@ -353,6 +351,35 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
     // because we need to make sure we do all we can until we get a real
     // block (WANT_WRITE or EAGAIN)
     switch (proxy->state) {
+    case PS_CLIENT_DISCONNECTED:
+        // Now client is disconnected or half-disconnected, just
+        // continue flushing to the server
+        if (error_rc_bad(proxy_handle_write(proxy, 0))) {
+            proxy_close(proxy, epollfd);
+            return TPX_CLOSED;
+        }
+
+        // If we're finished flushing, shut down the server
+        if (outbuf_empty(proxy, 0))
+            shutdown(proxy->serv_fd, SHUT_WR);
+
+        // If we got a full client close rather than a half close
+        if (!proxy->client_notified_close) {
+            proxy_close(proxy, epollfd);
+            return TPX_CLOSED;
+        }
+
+        ret = proxy_handle_read(proxy, 0);
+        if (ret == TPX_SUCCESS)
+            return TPX_SUCCESS;
+        else if (ret == TPX_FAILURE) {
+            proxy_close(proxy, epollfd);
+            return TPX_CLOSED;
+        }
+
+        handle_server_disconnected(proxy);
+
+        __attribute__((fallthrough));
     case PS_SERVER_DISCONNECTED:
         if ((!proxy->client_notified_close &&
              error_rc_bad(proxy_ignore_read(proxy, 1))) ||
@@ -413,12 +440,19 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
 
         // Now our close_notify is sent, we're onto lingering.
         // We want a new timeout every single time we're here
-        ngx_rbtree_delete(&timeouts, &proxy->timer);
+        if (proxy->timer_set)
+            ngx_rbtree_delete(&timeouts, &proxy->timer);
         proxy->timer.key = MIN(gettime() + proxy->shutdown_interval * 1000,
                                proxy->shutdown_time);
         ngx_rbtree_insert(&timeouts, &proxy->timer);
+        proxy->timer_set = 1;
 
         return TPX_SUCCESS;
+
+    case PS_CLIENT_CONNECTED:
+    case PS_SERVER_CONNECTING:
+    case PS_READY:
+        break;
     }
 
     // Unreachable
@@ -495,7 +529,19 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
 
     if (is_client && nbytes <= 0) {
+        int ssl_err = SSL_get_error(proxy->ssl, nbytes);
+        int saved_errno = errno;
+
+        if (ssl_err == SSL_ERROR_ZERO_RETURN) {
+            proxy->client_notified_close = 1;
+            proxy_process_data(proxy, is_client);
+            return TPX_SUCCESS;
+        }
+
         if (proxy_handle_ssl_failure(proxy, nbytes) == TPX_CLOSED) {
+            if (!(ssl_err == SSL_ERROR_SYSCALL &&
+                  (saved_errno == ECONNRESET || saved_errno == ETIMEDOUT)))
+                proxy_process_data(proxy, is_client);
             return TPX_CLOSED;
         }
     } else if (!is_client && nbytes == -1) {
@@ -506,11 +552,11 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         case EPIPE:
             log_system_err(LL_DEBUG, "Couldn't read bytes from server socket",
                            TPX_ERR_ERRNO);
-            return TPX_CLOSED;
+            return TPX_FAILURE;
         default:
             log_system_err(LL_ERROR, "Couldn't read bytes from server socket",
                        TPX_ERR_ERRNO);
-            return TPX_CLOSED;
+            return TPX_FAILURE;
         }
     } else if (!is_client && nbytes == 0) {
         log_proxy(LL_DEBUG, proxy, "server_disconnect", "EOF received", NULL);
@@ -689,6 +735,19 @@ tpx_err_t proxy_handle_ssl_failure(proxy_t *proxy, int retcode) {
         log_proxy(LL_DEBUG, proxy, "client_disconnect",
                   "EOF received", NULL);
         return TPX_CLOSED;
+    case SSL_ERROR_SSL:
+        if (ERR_GET_REASON(ERR_peek_error())
+            == SSL_R_UNEXPECTED_EOF_WHILE_READING) {
+            if (!proxy->hand_shaken) {
+                proxy->hand_shaken = 1;
+                log_handshake(LL_DEBUG, proxy, "failed");
+            }
+            log_proxy(LL_DEBUG, proxy, "client_disconnect",
+                      "Client closed without close_notify", NULL);
+            return TPX_CLOSED;
+        }
+
+        __attribute__((fallthrough));
     default:
         if (!proxy->hand_shaken) {
             proxy->hand_shaken = 1;
