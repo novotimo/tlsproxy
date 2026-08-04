@@ -113,7 +113,8 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
  */
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
-                      unsigned int conn_timeout);
+                      unsigned int conn_timeout,
+                      int keepidle, int keepintvl, int keepcnt);
 
 /**
  * @brief Add client and server sockets of proxy to epoll.
@@ -175,7 +176,7 @@ tpx_err_t proxy_process_data(proxy_t *proxy, int is_client);
 tpx_err_t proxy_close(proxy_t *proxy, int epollfd);
 
 /** @brief Create a nonblocking socket to connect to. */
-int create_connect(proxy_t *proxy);
+int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt);
 
 /** @brief Do we have any queued data to send? */
 int outbuf_empty(proxy_t *proxy, int is_client);

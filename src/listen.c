@@ -5,6 +5,8 @@
 #include <err.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <unistd.h>
@@ -16,6 +18,17 @@
 #include "event.h"
 #include "proxy.h"
 
+
+// Make sure we fallback to defaults
+static void keepalive_conf(const tpx_listen_conf_t *config,
+                           int *idle, int *intvl, int *cnt) {
+    *idle  = config->tcp_keepidle  ? (int)config->tcp_keepidle
+                                   : TPX_DEFAULT_TCP_KEEPIDLE;
+    *intvl = config->tcp_keepintvl ? (int)config->tcp_keepintvl
+                                   : TPX_DEFAULT_TCP_KEEPINTVL;
+    *cnt   = config->tcp_keepcnt   ? (int)config->tcp_keepcnt
+                                   : TPX_DEFAULT_TCP_KEEPCNT;
+}
 
 tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     assert(listen->event_id == EV_LISTEN);
@@ -32,10 +45,12 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     int sock_flags;
     if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
         perror("handle_accept: fcntl(GETFL)");
+        close(conn_sock);
         return TPX_FAILURE;
     }
     if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
         perror("handle_accept: fcntl(SETFL)");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -43,6 +58,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     if (ssl == NULL) {
         ERR_print_errors_fp(stderr);
         fprintf(stderr, "handle_accept: SSL_new: Couldn't create SSL ctx\n");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -50,6 +66,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: SSL_set_fd: Couldn't assign sock\n");
+        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -57,13 +74,21 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
 
     // Programmer beware: Make 100% sure that addr gets copied into the proxy
     // ctx rather than just its pointer.
+    int keepidle, keepintvl, keepcnt;
+    keepalive_conf(listen->config, &keepidle, &keepintvl, &keepcnt);
+
     proxy_t *proxy = create_proxy(conn_sock, ssl,
-                                  listen, listen->config->connect_timeout);
+                                  listen, listen->config->connect_timeout,
+                                  keepidle, keepintvl, keepcnt);
     if (!proxy) {
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");
+        close(conn_sock);
         return TPX_FAILURE;
     }
+
+    memcpy((void *)&proxy->client_addr, (void *)&addr, addrlen);
+    proxy->client_addrlen = addrlen;
 
     tpx_err_t retval = proxy_add_to_epoll(proxy, epollfd);
     if (retval == TPX_FAILURE) {
@@ -81,7 +106,11 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
     if (!l)
         err(EXIT_FAILURE, "create_listener: malloc");
     
-    int lsock = bind_listen_sock(l, config->listen_ip, config->listen_port);
+    int keepidle, keepintvl, keepcnt;
+    keepalive_conf(config, &keepidle, &keepintvl, &keepcnt);
+
+    int lsock = bind_listen_sock(l, config->listen_ip, config->listen_port,
+                                 keepidle, keepintvl, keepcnt);
     
     if (listen(lsock, SOMAXCONN) < 0)
         err(EXIT_FAILURE, "create_listener: listen");
@@ -103,7 +132,8 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
 }
 
 int bind_listen_sock(listen_t *l, const char *host,
-                     const unsigned short port) {
+                     const unsigned short port,
+                     int keepidle, int keepintvl, int keepcnt) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family = AF_UNSPEC;
@@ -129,9 +159,31 @@ int bind_listen_sock(listen_t *l, const char *host,
         }
 
         opt = 1;
-        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-                       &opt, sizeof(opt)))
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuse)");
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
+            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuseaddr)");
+
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == -1)
+            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuseport)");
+
+        // These options are set here and inherited by accepted sockets
+        if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) == -1)
+            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepalive)");
+
+        opt = keepidle;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,
+                       &opt, sizeof(opt)) == -1)
+            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepidle)");
+
+        opt = keepintvl;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL,
+                       &opt, sizeof(opt)) == -1)
+            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepintvl)");
+
+        opt = keepcnt;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,
+                       &opt, sizeof(opt)) == -1)
+            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepcnt)");
+
         opt = 0;
         if (lp->ai_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6,
                                                     IPV6_V6ONLY, &opt,

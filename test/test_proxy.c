@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -165,6 +166,51 @@ static int was_closed(int fd) {
 }
 
 
+/* Deliberately NOT forwarded to __real_setsockopt, unlike test_listen.c's
+   otherwise identical recorder. Every fd in this file is a number the mocked
+   socket() invented, so the real call fails EBADF - which is exactly what
+   happened when create_connect() first grew its keepalive block: four
+   unmockable syscalls started failing on fd 43 and took every create_proxy()
+   test down with them.
+
+   The value is recorded alongside the option because "was setsockopt called"
+   is not the contract. What matters is that the configured numbers reached the
+   socket, and a recorder that only counted calls would pass just as happily
+   with keepintvl and keepcnt transposed. */
+static struct {
+    unsigned int calls;
+    int level[MAX_RECORDED];
+    int optname[MAX_RECORDED];
+    int value[MAX_RECORDED];
+} setsockopt_log;
+
+int __wrap_setsockopt(int fd, int level, int optname, const void *val,
+                      socklen_t len);
+int __wrap_setsockopt(int fd, int level, int optname, const void *val,
+                      socklen_t len) {
+    (void)fd;
+    if (setsockopt_log.calls < MAX_RECORDED) {
+        setsockopt_log.level[setsockopt_log.calls] = level;
+        setsockopt_log.optname[setsockopt_log.calls] = optname;
+        setsockopt_log.value[setsockopt_log.calls] =
+            (val && len >= (socklen_t)sizeof(int)) ? *(const int *)val : 0;
+    }
+    setsockopt_log.calls++;
+    if (has_mock())
+        return (int)mock();
+    return 0;
+}
+
+static int opt_set_to(int level, int optname, int value) {
+    for (unsigned int i = 0; i < setsockopt_log.calls && i < MAX_RECORDED; ++i)
+        if (setsockopt_log.level[i] == level &&
+            setsockopt_log.optname[i] == optname &&
+            setsockopt_log.value[i] == value)
+            return 1;
+    return 0;
+}
+
+
 /* epoll_ctl records the whole registration, not just the return code, because
    the tagged pointer this proxy hands epoll is the input test_event.c decodes.
    Testing only the return value would leave the producer side unverified. */
@@ -245,6 +291,7 @@ void __wrap___assert_fail(const char *assertion, const char *file,
 static int reset_recorders(void **state) {
     (void)state;
     memset(&close_log, 0, sizeof(close_log));
+    memset(&setsockopt_log, 0, sizeof(setsockopt_log));
     memset(&epoll_log, 0, sizeof(epoll_log));
     memset(&log_proxy_log, 0, sizeof(log_proxy_log));
     assert_fail_calls = 0;
@@ -319,7 +366,7 @@ static void create_connect_reports_socket_failure(void **state) {
     p.listener = make_listener();
 
     will_return(__wrap_socket, -1);
-    assert_int_equal(create_connect(&p), -1);
+    assert_int_equal(create_connect(&p, 60, 10, 3), -1);
     assert_int_equal(close_log.calls, 0);
 }
 
@@ -336,7 +383,7 @@ static void create_connect_closes_socket_when_getfl_fails(void **state) {
 
     will_return(__wrap_socket, 50);
     will_return(__wrap_fcntl, -1);
-    assert_int_equal(create_connect(&p), -1);
+    assert_int_equal(create_connect(&p, 60, 10, 3), -1);
     assert_true(was_closed(50));
 }
 
@@ -349,8 +396,59 @@ static void create_connect_closes_socket_when_setfl_fails(void **state) {
     will_return(__wrap_socket, 50);
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_fcntl, -1);
-    assert_int_equal(create_connect(&p), -1);
+    assert_int_equal(create_connect(&p, 60, 10, 3), -1);
     assert_true(was_closed(50));
+}
+
+/* The whole point of the keepalive work: nothing else in this program will
+   ever notice a backend that dies without sending FIN, because there is no
+   idle timeout anywhere. The claim is therefore not "setsockopt was called"
+   but "the configured numbers reached the socket" - keepintvl and keepcnt are
+   both small ints on the same level, so transposing them is a live mistake
+   that a call-counting test would wave through. */
+static void create_connect_configures_keepalive_on_the_backend(void **state) {
+    (void)state;
+    proxy_t p;
+    memset(&p, 0, sizeof(p));
+    p.listener = make_listener();
+
+    will_return(__wrap_socket, 50);
+    will_return(__wrap_fcntl, 0);
+    will_return(__wrap_fcntl, 0);
+
+    assert_int_equal(create_connect(&p, 60, 10, 3), 50);
+    assert_true(opt_set_to(SOL_SOCKET, SO_KEEPALIVE, 1));
+    assert_true(opt_set_to(IPPROTO_TCP, TCP_KEEPIDLE, 60));
+    assert_true(opt_set_to(IPPROTO_TCP, TCP_KEEPINTVL, 10));
+    assert_true(opt_set_to(IPPROTO_TCP, TCP_KEEPCNT, 3));
+    assert_false(was_closed(50));
+}
+
+/* Keepalive tuning is a refinement, not a precondition. A kernel that refuses
+   TCP_KEEPIDLE leaves a connection that still works and still has keepalive,
+   just on the tcp_keepalive_* sysctl defaults instead. Failing the connection
+   would convert a rejected tuning knob into a dropped client, so the socket is
+   handed back and only the failure is logged.
+
+   The mock queue is armed for all four options, not just the failing one:
+   arming only the second would make the first call consume it and the test
+   would be measuring a refused SO_KEEPALIVE while claiming otherwise. */
+static void create_connect_survives_a_refused_keepalive_option(void **state) {
+    (void)state;
+    proxy_t p;
+    memset(&p, 0, sizeof(p));
+    p.listener = make_listener();
+
+    will_return(__wrap_socket, 50);
+    will_return(__wrap_fcntl, 0);
+    will_return(__wrap_fcntl, 0);
+    will_return(__wrap_setsockopt, 0);      // SO_KEEPALIVE
+    will_return(__wrap_setsockopt, -1);     // TCP_KEEPIDLE refused
+    will_return(__wrap_setsockopt, 0);      // TCP_KEEPINTVL
+    will_return(__wrap_setsockopt, 0);      // TCP_KEEPCNT
+
+    assert_int_equal(create_connect(&p, 60, 10, 3), 50);
+    assert_false(was_closed(50));
 }
 
 
@@ -365,7 +463,7 @@ static void create_proxy_ready_when_connect_completes(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
 
-    proxy_t *p = create_proxy(42, NULL, make_listener(), 5);
+    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3);
     assert_non_null(p);
     assert_int_equal(p->event_id, EV_PROXY);
     assert_non_null(p->c2s);
@@ -389,7 +487,7 @@ static void create_proxy_pending_when_connect_blocks(void **state) {
     will_return(__wrap_connect, EINPROGRESS);
     will_return(__wrap_ngx_rbtree_insert, NULL);
 
-    proxy_t *p = create_proxy(42, NULL, make_listener(), 5);
+    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3);
     assert_non_null(p);
     assert_int_equal(p->state, PS_SERVER_CONNECTING);
     assert_int_equal(p->timer_set, 1);
@@ -406,13 +504,13 @@ static void create_proxy_null_when_connect_fails(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
 }
 
 static void create_proxy_null_when_malloc_fails(void **state) {
     (void)state;
     malloc_fails_next = 1;
-    assert_null(create_proxy(42, NULL, make_listener(), 5));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
     // Nothing was opened, so nothing may be closed or counted.
     assert_int_equal(close_log.calls, 0);
 }
@@ -433,7 +531,7 @@ static void create_proxy_failure_does_not_leak_nproxies(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
     assert_int_equal(nproxies, before);
 }
 
@@ -452,17 +550,21 @@ static void create_proxy_failure_does_not_log_null_proxy(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
     for (unsigned int i = 0; i < log_proxy_log.calls && i < MAX_RECORDED; ++i)
         assert_non_null(log_proxy_log.proxies[i]);
 }
 
-/* The failure branch closes serv_fd and forgets client_fd, and handle_accept()
-   does not close it either - it only does SSL_free() and returns TPX_FAILURE
-   (src/listen.c:handle_accept()). So the accepted socket leaks on every failed
-   connection, this time holding a client connection open as well as a
-   descriptor. */
-static void create_proxy_failure_closes_accepted_fd(void **state) {
+/* The accepted fd belongs to handle_accept() until a proxy is successfully
+   built around it: on failure create_proxy() hands back NULL and the caller
+   closes it (src/listen.c:handle_accept(), pinned from the other side by
+   test_listen.c:handle_accept_closes_fd_when_create_proxy_fails). So the
+   failure branch must close the backend socket it opened itself and must leave
+   the client fd strictly alone - closing it here too would make every failed
+   connection a double close, and on a busy worker the second close lands on
+   whatever descriptor the number has since been recycled to. */
+static void
+create_proxy_failure_closes_only_the_socket_it_opened(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
     will_return(__wrap_fcntl, 0);
@@ -470,9 +572,9 @@ static void create_proxy_failure_closes_accepted_fd(void **state) {
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
-    assert_null(create_proxy(42, NULL, make_listener(), 5));
+    assert_null(create_proxy(42, NULL, make_listener(), 5, 60, 10, 3));
     assert_true(was_closed(43));
-    assert_true(was_closed(42));
+    assert_false(was_closed(42));
 }
 
 /* create_proxy() allocates with malloc() and assigns nine of the eleven
@@ -495,7 +597,7 @@ static void create_proxy_initialises_client_addr(void **state) {
     will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
 
-    proxy_t *p = create_proxy(42, NULL, make_listener(), 5);
+    proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3);
     assert_non_null(p);
     assert_int_equal(p->client_addr.ss_family, AF_UNSPEC);
     assert_int_equal(p->client_addrlen, 0);
@@ -613,11 +715,16 @@ static void add_to_epoll_fails_on_server_registration(void **state) {
 /* proxy_close()                                                       */
 /* ------------------------------------------------------------------ */
 
+/* SSL_shutdown() is armed even though this is the client-disconnected path:
+   proxy_close() sends close_notify on every state now, not only on
+   PS_SERVER_DISCONNECTED, and __wrap_SSL_shutdown forwards to the real one
+   when no mock is queued - which would hand OpenSSL the 0x7 below. */
 static void close_frees_proxy_with_ssl(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
     p->ssl = (SSL *)0x7;
 
+    will_return(__wrap_SSL_shutdown, 1);
     will_return(__wrap_SSL_free, NULL);
     assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
 }
@@ -638,32 +745,32 @@ static void close_completes_when_shutdown_finishes(void **state) {
     assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
 }
 
-/* SSL_shutdown() returning 0 means the close_notify went out but the peer's
-   has not come back, so the proxy has to stay alive. The early return sits
-   above every teardown step, and a partially torn-down proxy that the caller
-   is told to keep using is a use-after-free waiting for its next event, so
-   pin that nothing was released. */
-static void close_leaves_proxy_intact_while_shutdown_pending(void **state) {
+/* SSL_shutdown() returning 0 means our close_notify went out but the peer's
+   has not come back. proxy_close() deliberately does not wait for it, and this
+   pins that it cannot start: an earlier version returned TPX_AGAIN here and
+   kept the proxy alive, which meant a peer that never replied held the
+   proxy_t, both descriptors and its slot in nproxies indefinitely - and
+   nproxies is what app/main.c:child_loop() waits on to finish a graceful
+   shutdown, so one silent peer was enough to make SIGTERM never complete.
+
+   The wait bought nothing to offset that. RFC 5246 7.2.1 requires only that
+   close_notify be sent: "it is not required for the initiator of the close to
+   wait for the responding close_notify alert before closing the read side",
+   and the peer's reply has nothing to tell a proxy that is about to close both
+   descriptors and discard the session.
+
+   Descriptors are left at the -1 new_proxy() gives them: the claim here is the
+   return value, and close_closes_both_fds() owns the fd claim. */
+static void close_completes_when_the_peer_never_replies(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
     p->ssl = (SSL *)0x7;
-    p->serv_fd = 11;
-    p->client_fd = 12;
 
     will_return(__wrap_SSL_shutdown, 0);
-    assert_int_equal(proxy_close(p, -1), TPX_AGAIN);
+    will_return(__wrap_SSL_free, NULL);
 
-    assert_non_null(p->ssl);
-    assert_non_null(p->c2s);
-    assert_non_null(p->s2c);
-    assert_int_equal(p->serv_fd, 11);
-    assert_int_equal(p->client_fd, 12);
-    assert_int_equal(close_log.calls, 0);
-
-    p->ssl = NULL;
-    p->serv_fd = -1;
-    p->client_fd = -1;
     assert_int_equal(proxy_close(p, -1), TPX_CLOSED);
+    assert_int_equal(close_log.calls, 0);
 }
 
 static void close_closes_both_fds(void **state) {
@@ -1033,6 +1140,12 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(create_connect_closes_socket_when_setfl_fails,
                                reset_recorders),
+        cmocka_unit_test_setup(
+            create_connect_configures_keepalive_on_the_backend,
+            reset_recorders),
+        cmocka_unit_test_setup(
+            create_connect_survives_a_refused_keepalive_option,
+            reset_recorders),
 
         cmocka_unit_test_setup(create_proxy_ready_when_connect_completes,
                                reset_recorders),
@@ -1046,8 +1159,9 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(create_proxy_failure_does_not_log_null_proxy,
                                reset_recorders),
-        cmocka_unit_test_setup(create_proxy_failure_closes_accepted_fd,
-                               reset_recorders),
+        cmocka_unit_test_setup(
+            create_proxy_failure_closes_only_the_socket_it_opened,
+            reset_recorders),
         cmocka_unit_test_setup(create_proxy_initialises_client_addr,
                                reset_recorders),
 
@@ -1065,7 +1179,7 @@ int main(void) {
         cmocka_unit_test_setup(close_frees_proxy_without_ssl, reset_recorders),
         cmocka_unit_test_setup(close_completes_when_shutdown_finishes,
                                reset_recorders),
-        cmocka_unit_test_setup(close_leaves_proxy_intact_while_shutdown_pending,
+        cmocka_unit_test_setup(close_completes_when_the_peer_never_replies,
                                reset_recorders),
         cmocka_unit_test_setup(close_closes_both_fds, reset_recorders),
         cmocka_unit_test_setup(close_skips_epoll_when_never_registered,

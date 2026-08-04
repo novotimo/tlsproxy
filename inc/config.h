@@ -9,12 +9,23 @@
 //#define TPX_ENUM_MISSING -1
 
 
+/* Default keepalive parameters, now shutdown is bounded to 90 seconds */
+#define TPX_DEFAULT_TCP_KEEPIDLE  60
+#define TPX_DEFAULT_TCP_KEEPINTVL 10
+#define TPX_DEFAULT_TCP_KEEPCNT   3
+
 typedef struct tpx_listen_conf_s {
     const char *name; /**< @brief The name of the listener */
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
     unsigned int connect_timeout; /**< @brief The timeout for connecting to
                                    * the backend in milliseconds */
+    unsigned int tcp_keepidle; /**< @brief Seconds a connection may sit idle
+                                * before the first keepalive probe. 0 means
+                                * use TPX_DEFAULT_TCP_KEEPIDLE */
+    unsigned int tcp_keepintvl; /**< @brief Seconds between keepalive probes */
+    unsigned int tcp_keepcnt; /**< @brief Unanswered probes before the peer is
+                               * declared dead */
 
     const char *listen_ip; /**< @brief The local IP address to listen on. */
     unsigned int listen_port; /**< @brief The port to listen on. */
@@ -31,6 +42,7 @@ typedef struct tpx_listen_conf_s {
                           */
     const char *servkeypass; /**< @brief The encryption password for the server
                               * key */
+
 } tpx_listen_conf_t;
 
 /** @brief The configuration of the TLS Proxy */
@@ -60,6 +72,15 @@ static const cyaml_schema_field_t listener_fields_schema[] = {
     CYAML_FIELD_UINT(
         "connect-timeout", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
         tpx_listen_conf_t, connect_timeout),
+    CYAML_FIELD_UINT(
+        "tcp-keepidle", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, tcp_keepidle),
+    CYAML_FIELD_UINT(
+        "tcp-keepintvl", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, tcp_keepintvl),
+    CYAML_FIELD_UINT(
+        "tcp-keepcnt", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, tcp_keepcnt),
     
     CYAML_FIELD_STRING_PTR(
         "listen-ip", CYAML_FLAG_POINTER, tpx_listen_conf_t, listen_ip,

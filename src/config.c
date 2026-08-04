@@ -30,6 +30,18 @@ int tpx_validate_conf_l(const tpx_listen_conf_t *config) {
         fprintf(stderr, "Config error in listener %s: 'target-port' must be a "
                 "valid port number\n", config->name);
         return TPX_FAILURE;
+    } else if (config->tcp_keepidle > INT_MAX) {
+        fprintf(stderr, "Config error in listener %s: 'tcp-keepidle' must be "
+                "less than %d\n", config->name, INT_MAX);
+        return TPX_FAILURE;
+    } else if (config->tcp_keepintvl > INT_MAX) {
+        fprintf(stderr, "Config error in listener %s: 'tcp-keepintvl' must be "
+                "less than %d\n", config->name, INT_MAX);
+        return TPX_FAILURE;
+    } else if (config->tcp_keepcnt > INT_MAX) {
+        fprintf(stderr, "Config error in listener %s: 'tcp-keepcnt' must be "
+                "less than %d\n", config->name, INT_MAX);
+        return TPX_FAILURE;
     }
     return TPX_SUCCESS;
 }

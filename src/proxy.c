@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <sys/epoll.h>
@@ -25,18 +27,20 @@ static ngx_rbtree_node_t sentinel;
 uint32_t nproxies = 0;
 
 
-int create_connect(proxy_t *proxy);
+int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt);
 
 
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
-                      unsigned int conn_timeout) {
+                      unsigned int conn_timeout,
+                      int keepidle, int keepintvl, int keepcnt) {
     proxy_t *proxy = malloc(sizeof(proxy_t));
     if (!proxy) {
         log_system_err(LL_ERROR, "Couldn't allocate memory for proxy",
                        TPX_ERR_ERRNO);
         return NULL;
     }
+    memset(proxy, '\0', sizeof(proxy_t));
 
     proxy->event_id = EV_PROXY;
     proxy->c2s = queue_new();
@@ -48,7 +52,19 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
     proxy->timer_set = 0;
     proxy->hand_shaken = 0;
 
-    proxy->serv_fd = create_connect(proxy);
+    log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
+
+    if ((proxy->serv_fd = create_connect(proxy,
+                                         keepidle, keepintvl, keepcnt)) == -1) {
+        queue_free(proxy->c2s);
+        queue_free(proxy->s2c);
+
+        // fd hasn't been added to epoll yet, and SSL will be freed outside
+        free(proxy);
+
+        return NULL;
+    }
+
     tpx_err_t ret = proxy_handle_connect(proxy, conn_timeout);
     if (ret == TPX_SUCCESS)
         proxy->state = PS_READY;
@@ -63,17 +79,15 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
 
         // fd hasn't been added to epoll yet, and SSL will be freed outside
         free(proxy);
-        
-        proxy = NULL;
-    }
 
-    log_proxy(LL_DEBUG, proxy, "client_connect", NULL, NULL);
+        return NULL;
+    }
 
     nproxies++;
     return proxy;
 }
 
-int create_connect(proxy_t *proxy) {
+int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt) {
     assert(proxy);
     int conn_sock = socket(proxy->listener->peer_addr.ss_family, SOCK_STREAM,0);
     if (conn_sock < 0) {
@@ -87,13 +101,43 @@ int create_connect(proxy_t *proxy) {
         log_proxy(LL_ERROR, proxy, "ioerror",
                   "Couldn't get socket flags of connect socket",
                   strerror(errno));
+        close(conn_sock);
         return -1;
     }
     if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
         log_proxy(LL_ERROR, proxy, "ioerror", "Couldn't set connect socket to "
                   "non-blocking mode", strerror(errno));
+        close(conn_sock);
         return -1;
     }
+
+    // It's *fine* if keepalive isn't set, we can still go. It just means that
+    // the default Linux kernel keepalive of 72 hours is used
+    int opt = 1;
+    if (setsockopt(conn_sock, SOL_SOCKET, SO_KEEPALIVE,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't enable keepalive on connect socket",
+                  strerror(errno));
+
+    opt = keepidle;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_KEEPIDLE,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set keepidle on connect socket", strerror(errno));
+
+    opt = keepintvl;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_KEEPINTVL,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set keepintvl on connect socket", strerror(errno));
+
+    opt = keepcnt;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_KEEPCNT,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set keepcnt on connect socket", strerror(errno));
+
     return conn_sock;
 }
 
@@ -103,11 +147,11 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
     int retcode = connect(proxy->serv_fd,
                           (struct sockaddr *)&proxy->listener->peer_addr,
                           proxy->listener->peer_addrlen);
-    if (retcode == -1 && errno != EINPROGRESS) {
+    if (retcode == -1 && errno != EINPROGRESS && errno != EALREADY) {
         log_proxy(LL_ERROR, proxy, "ioerror", "Couldn't connect socket",
                   strerror(errno));
         return TPX_FAILURE;
-    } else if (retcode == -1 && errno == EINPROGRESS) {
+    } else if (retcode == -1 && (errno == EINPROGRESS || errno == EALREADY)) {
         if (proxy->state == PS_CLIENT_CONNECTED) {
             // This is the first time we've tried this, need to set a timeout
             // Hardcoded to 3 seconds for now
@@ -158,8 +202,8 @@ tpx_err_t proxy_close(proxy_t *proxy, int epollfd) {
         proxy->timer_set = 0;
     }
 
-    if (proxy->state == PS_SERVER_DISCONNECTED && SSL_shutdown(proxy->ssl) == 0)
-        return TPX_AGAIN;
+    if (proxy->ssl)
+        SSL_shutdown(proxy->ssl);
 
     switch (proxy->state) {
     case PS_CLIENT_CONNECTED:
