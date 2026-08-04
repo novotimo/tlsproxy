@@ -49,9 +49,6 @@ extern uint32_t nproxies;
     WRAP_FUN_ERR(send, ssize_t, \
                  (int sockfd, const void *buf, size_t size, int flags), \
                  (sockfd, buf, size, flags))                            \
-    WRAP_FUN(SSL_write, ssize_t, \
-             (SSL *ssl, const void *buf, int num), \
-             (ssl, buf, num)) \
     WRAP_FUN_ERR(read, ssize_t, \
                  (int sockfd, void *buf, size_t size), \
                  (sockfd, buf, size))                            \
@@ -211,6 +208,29 @@ static int opt_set_to(int level, int optname, int value) {
 }
 
 
+/* SSL_write is recorded rather than only mocked, because the question worth
+   asking about the client side is "was the client written to at all", and a
+   return-value oracle cannot answer that. Defaults to accepting the whole
+   buffer, so a test that does not care about short writes need arm nothing -
+   and so an unmocked call never reaches __real_SSL_write with the NULL SSL
+   that new_proxy() hands out. */
+static struct {
+    unsigned int calls;
+    int nbytes[MAX_RECORDED];
+} ssl_write_log;
+
+ssize_t __wrap_SSL_write(SSL *ssl, const void *buf, int num);
+ssize_t __wrap_SSL_write(SSL *ssl, const void *buf, int num) {
+    (void)ssl; (void)buf;
+    if (ssl_write_log.calls < MAX_RECORDED)
+        ssl_write_log.nbytes[ssl_write_log.calls] = num;
+    ssl_write_log.calls++;
+    if (has_mock())
+        return (ssize_t)mock();
+    return num;
+}
+
+
 /* epoll_ctl records the whole registration, not just the return code, because
    the tagged pointer this proxy hands epoll is the input test_event.c decodes.
    Testing only the return value would leave the producer side unverified. */
@@ -292,6 +312,7 @@ static int reset_recorders(void **state) {
     (void)state;
     memset(&close_log, 0, sizeof(close_log));
     memset(&setsockopt_log, 0, sizeof(setsockopt_log));
+    memset(&ssl_write_log, 0, sizeof(ssl_write_log));
     memset(&epoll_log, 0, sizeof(epoll_log));
     memset(&log_proxy_log, 0, sizeof(log_proxy_log));
     assert_fail_calls = 0;
@@ -921,6 +942,50 @@ static void read_entry_invariants_hold_on_a_fresh_queue(void **state) {
     free_proxy(p);
 }
 
+/* A backend that answers and closes hands over both in one epoll wakeup. The
+   read loop takes the body, loops, reads 0, and falls out with nbytes == 0 -
+   and the server-EOF branch that follows returns TPX_CLOSED from ABOVE the
+   proxy_process_data() call. proxy_process_data() is the only thing that moves
+   s2c to the client, so the body just read is never written; handle_proxy()
+   then goes straight to proxy_close(), which queue_free()s it.
+
+   EPOLLET makes it unrecoverable rather than merely late. The client fd's
+   EPOLLOUT edge fired once at registration, when the queue was empty, and no
+   further edge arrives until the socket goes unwritable->writable - so the
+   flush after a read is the only path that ever drains s2c.
+
+   Live, and not an edge case: it is every HTTP response delimited by
+   connection close. What the client sees is a truncated body, which is one of
+   the three things separating this proxy from nginx on the same load
+   generator (the other two are the RST from close()ing with unread data still
+   queued, and the missing close_notify).
+
+   Asserted on the write itself rather than on read_idx: "the client was never
+   written to" is the defect, and a queue index is a symptom of it. */
+static void server_eof_still_flushes_what_it_just_read(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->serv_fd = 11;
+    p->client_fd = 12;
+    p->hand_shaken = 1;
+
+    /* Body, then EOF, in one call. Value/errno pairs: the WRAP_FUN_ERR
+       wrapper consumes an errno after each return value, and arming only the
+       two return values would leave the second call unmocked and reading fd
+       11 for real. */
+    will_return(__wrap_read, 23);
+    will_return(__wrap_read, 0);
+    will_return(__wrap_read, 0);
+    will_return(__wrap_read, 0);
+
+    assert_int_equal(proxy_handle_read(p, 0), TPX_CLOSED);
+
+    assert_int_equal(ssl_write_log.calls, 1);
+    assert_int_equal(ssl_write_log.nbytes[0], 23);
+
+    free_proxy(p);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* proxy_handle_write()                                                */
@@ -1199,6 +1264,8 @@ int main(void) {
                                reset_recorders),
 
         cmocka_unit_test_setup(read_entry_invariants_hold_on_a_fresh_queue,
+                               reset_recorders),
+        cmocka_unit_test_setup(server_eof_still_flushes_what_it_just_read,
                                reset_recorders),
 
         cmocka_unit_test_setup(write_accepts_a_freshly_rotated_chunk,
