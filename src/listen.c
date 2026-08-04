@@ -30,6 +30,15 @@ static void keepalive_conf(const tpx_listen_conf_t *config,
                                    : TPX_DEFAULT_TCP_KEEPCNT;
 }
 
+// Make sure we fallback to defaults
+static void shutdown_conf(const tpx_listen_conf_t *config,
+                          uint64_t *timeout, uint64_t *interval) {
+    *timeout  = config->shutdown_timeout  ? (uint64_t)config->shutdown_timeout
+                                   : TPX_DEFAULT_SHUTDOWN_TIMEOUT;
+    *interval = config->shutdown_interval ? (uint64_t)config->shutdown_interval
+                                   : TPX_DEFAULT_SHUTDOWN_INTERVAL;
+}
+
 tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     assert(listen->event_id == EV_LISTEN);
     
@@ -77,9 +86,13 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     int keepidle, keepintvl, keepcnt;
     keepalive_conf(listen->config, &keepidle, &keepintvl, &keepcnt);
 
+    uint64_t shutdown_timeout, shutdown_interval;
+    shutdown_conf(listen->config, &shutdown_timeout, &shutdown_interval);
+
     proxy_t *proxy = create_proxy(conn_sock, ssl,
                                   listen, listen->config->connect_timeout,
-                                  keepidle, keepintvl, keepcnt);
+                                  keepidle, keepintvl, keepcnt,
+                                  shutdown_timeout, shutdown_interval);
     if (!proxy) {
         SSL_free(ssl);
         fprintf(stderr, "handle_accept: Couldn't create proxy\n");

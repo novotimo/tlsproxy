@@ -10,9 +10,13 @@
 
 
 /* Default keepalive parameters, now shutdown is bounded to 90 seconds */
-#define TPX_DEFAULT_TCP_KEEPIDLE  60
-#define TPX_DEFAULT_TCP_KEEPINTVL 10
-#define TPX_DEFAULT_TCP_KEEPCNT   3
+#define TPX_DEFAULT_TCP_KEEPIDLE      60
+#define TPX_DEFAULT_TCP_KEEPINTVL     10
+#define TPX_DEFAULT_TCP_KEEPCNT       3
+/* Shutdown should take at most 30 seconds, and if we don't get any messages
+ * within 5 seconds, we should send our FIN and leave */
+#define TPX_DEFAULT_SHUTDOWN_TIMEOUT  30
+#define TPX_DEFAULT_SHUTDOWN_INTERVAL 5
 
 typedef struct tpx_listen_conf_s {
     const char *name; /**< @brief The name of the listener */
@@ -26,6 +30,12 @@ typedef struct tpx_listen_conf_s {
     unsigned int tcp_keepintvl; /**< @brief Seconds between keepalive probes */
     unsigned int tcp_keepcnt; /**< @brief Unanswered probes before the peer is
                                * declared dead */
+
+    unsigned int shutdown_timeout; /**< @brief The maximum time it takes to shut
+                                    * down a proxy after the server is down */
+    unsigned int shutdown_interval; /**< @brief After this many seconds, if we
+                                     * don't get a message, send our FIN and
+                                     * leave */
 
     const char *listen_ip; /**< @brief The local IP address to listen on. */
     unsigned int listen_port; /**< @brief The port to listen on. */
@@ -81,6 +91,12 @@ static const cyaml_schema_field_t listener_fields_schema[] = {
     CYAML_FIELD_UINT(
         "tcp-keepcnt", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
         tpx_listen_conf_t, tcp_keepcnt),
+    CYAML_FIELD_UINT(
+        "shutdown-timeout", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, shutdown_timeout),
+    CYAML_FIELD_UINT(
+        "shutdown-interval", CYAML_FLAG_DEFAULT | CYAML_FLAG_OPTIONAL,
+        tpx_listen_conf_t, shutdown_interval),
     
     CYAML_FIELD_STRING_PTR(
         "listen-ip", CYAML_FLAG_POINTER, tpx_listen_conf_t, listen_ip,
