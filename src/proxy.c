@@ -328,7 +328,7 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     // Invariants
     assert(in_bufq->write_idx < TPX_NET_BUFSIZE);
     assert(queue_empty(in_bufq) == (in_bufq->write_idx == -1));
-    assert(buflen < INT_MAX && buflen > 0);
+    assert(buflen < INT_MAX);
 
     if (in_bufq->write_idx == -1) {
         // Add new chunk
@@ -398,6 +398,7 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         }
     } else if (!is_client && nbytes == 0) {
         log_proxy(LL_DEBUG, proxy, "server_disconnect", "EOF received", NULL);
+        proxy_process_data(proxy, is_client);
         return TPX_CLOSED;
     }
 
