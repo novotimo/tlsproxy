@@ -8,6 +8,18 @@ CI that would have caught them. The two worst were a logger that wedged every
 worker permanently once its ring buffer filled, and a configuration reload that
 killed the master process on any error in the new file.
 
+## Startup (#19)
+
+- `tlsproxy -v` prints the version and exits, and the startup banner carries it
+  as well. Both come from `PROJECT_VERSION` in `CMakeLists.txt` by way of a
+  generated `inc/version.h`, so there is one place to bump.
+- A config file that cannot be parsed is reported with its name, which is what
+  you want when the name is a typo or the argument was meant to be a flag.
+- stdout is asked for line buffering explicitly, since it is fully buffered
+  when it isn't a terminal, and the startup messages otherwise sat in every
+  worker's inherited buffer and were printed again by each of them on the way
+  out. It also keeps them in order against stderr, which is unbuffered.
+
 ## Connection shutdown (#38)
 
 Teardown is now a state machine, working through `PS_SERVER_DISCONNECTED`,
