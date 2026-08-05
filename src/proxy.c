@@ -52,7 +52,7 @@ static void handle_server_disconnected(proxy_t *proxy) {
 
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
-                      unsigned int conn_timeout,
+                      uint64_t conn_timeout,
                       int keepidle, int keepintvl, int keepcnt,
                       uint64_t shutdown_timeout, uint64_t shutdown_interval) {
     proxy_t *proxy = malloc(sizeof(proxy_t));
@@ -71,6 +71,7 @@ proxy_t *create_proxy(int accepted_fd, SSL *ssl,
     proxy->ssl = ssl;
     proxy->state = PS_CLIENT_CONNECTED;
     proxy->timer_set = 0;
+    proxy->conn_timeout = conn_timeout;
     proxy->shutdown_timeout = shutdown_timeout;
     proxy->shutdown_interval = shutdown_interval;
     proxy->hand_shaken = 0;
@@ -165,7 +166,7 @@ int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt) {
     return conn_sock;
 }
 
-tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
+tpx_err_t proxy_handle_connect(proxy_t *proxy, uint64_t conn_timeout) {
     assert(proxy->state == PS_CLIENT_CONNECTED ||
            proxy->state == PS_SERVER_CONNECTING);
     int retcode = connect(proxy->serv_fd,
@@ -177,9 +178,9 @@ tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout) {
         return TPX_FAILURE;
     } else if (retcode == -1 && (errno == EINPROGRESS || errno == EALREADY)) {
         if (proxy->state == PS_CLIENT_CONNECTED) {
-            // This is the first time we've tried this, need to set a timeout
-            // Hardcoded to 3 seconds for now
-            proxy->timer.key = gettime() + conn_timeout;
+            // Only the first connect attempt sets this timer,
+            // since next time we'll be in PS_SERVER_CONNECTING
+            proxy->timer.key = gettime() + conn_timeout * 1000;
             ngx_rbtree_insert(&timeouts, &proxy->timer);
             proxy->timer_set = 1;
         }
@@ -284,7 +285,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
     case PS_CLIENT_CONNECTED:
     case PS_SERVER_CONNECTING:
         if (!is_client) {
-            ret = proxy_handle_connect(proxy, 0);
+            ret = proxy_handle_connect(proxy, proxy->conn_timeout);
             if (ret == TPX_AGAIN)
                 proxy->state = PS_SERVER_CONNECTING;
             else if (ret == TPX_SUCCESS)

@@ -18,12 +18,17 @@
 #define TPX_DEFAULT_SHUTDOWN_TIMEOUT  30
 #define TPX_DEFAULT_SHUTDOWN_INTERVAL 5
 
+// Copies nginx's proxy_connect_timeout, maximum is 127 as the Linux
+// kernel gives up after that long anyway
+#define TPX_DEFAULT_CONNECT_TIMEOUT 60
+
 typedef struct tpx_listen_conf_s {
     const char *name; /**< @brief The name of the listener */
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
-    unsigned int connect_timeout; /**< @brief The timeout for connecting to
-                                   * the backend in milliseconds */
+    unsigned int connect_timeout; /**< @brief Seconds to wait for the backend
+                                   * connection to complete. 0 means use
+                                   * TPX_DEFAULT_CONNECT_TIMEOUT */
     unsigned int tcp_keepidle; /**< @brief Seconds a connection may sit idle
                                 * before the first keepalive probe. 0 means
                                 * use TPX_DEFAULT_TCP_KEEPIDLE */

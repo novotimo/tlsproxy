@@ -39,6 +39,13 @@ static void shutdown_conf(const tpx_listen_conf_t *config,
                                    : TPX_DEFAULT_SHUTDOWN_INTERVAL;
 }
 
+// Make sure we fallback to defaults
+static void connect_conf(const tpx_listen_conf_t *config,
+                         uint64_t *timeout) {
+    *timeout = config->connect_timeout  ? (uint64_t)config->connect_timeout
+                                   : TPX_DEFAULT_CONNECT_TIMEOUT;
+}
+
 tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     assert(listen->event_id == EV_LISTEN);
     
@@ -89,8 +96,11 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     uint64_t shutdown_timeout, shutdown_interval;
     shutdown_conf(listen->config, &shutdown_timeout, &shutdown_interval);
 
+    uint64_t connect_timeout;
+    connect_conf(listen->config, &connect_timeout);
+
     proxy_t *proxy = create_proxy(conn_sock, ssl,
-                                  listen, listen->config->connect_timeout,
+                                  listen, connect_timeout,
                                   keepidle, keepintvl, keepcnt,
                                   shutdown_timeout, shutdown_interval);
     if (!proxy) {

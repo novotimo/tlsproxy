@@ -4,6 +4,10 @@
 
 #include "errors.h"
 
+// This is arbitrary for now, but we need to make sure people don't
+// fork bomb themselves
+#define TPX_WORKERS_MAX 128
+
 /**
  * Verify config rules that can't be verified by YAML parser
  */
@@ -49,6 +53,15 @@ int tpx_validate_conf_l(const tpx_listen_conf_t *config) {
 int tpx_validate_conf(const tpx_config_t *config) {
     if (config->listeners_count < 1) {
         fprintf(stderr, "Config error: No listeners provided\n");
+        return TPX_FAILURE;
+    }
+
+    if (config->nworkers == 0) {
+        fprintf(stderr, "Config error: nworkers must be greater than zero\n");
+        return TPX_FAILURE;
+    } else if (config->nworkers > TPX_WORKERS_MAX) {
+        fprintf(stderr, "Config error: nworkers must be at most %u\n",
+               TPX_WORKERS_MAX);
         return TPX_FAILURE;
     }
     for (size_t i=0; i<config->listeners_count; ++i)

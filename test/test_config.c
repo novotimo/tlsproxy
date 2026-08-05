@@ -82,6 +82,8 @@ static void check_conf_validation(void **state) {
     assert_int_equal(vfy_f(CFG_DIR "/badconf10.yml"),TPX_FAILURE);
     assert_int_equal(vfy_f(CFG_DIR "/badconf11.yml"),TPX_FAILURE);
     assert_int_equal(vfy_f(CFG_DIR "/badconf12.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf13.yml"),TPX_FAILURE);
+    assert_int_equal(vfy_f(CFG_DIR "/badconf14.yml"),TPX_FAILURE);
 }
 
 

@@ -1,7 +1,7 @@
 # Less than minimal
 
 
-nworkers: 0
+nworkers: 1
 listeners:
   - name: 
     target-ip: 

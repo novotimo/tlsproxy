@@ -81,7 +81,7 @@ target-ip: 127.0.0.1
 target-port: 8080
 
 ## If we can't connect to the server by this time, drop the connection
-connect-timeout: 5000
+connect-timeout: 5
 
 ## The proxy will accept connections on <listen-ip>:<listen-port>
 ## 0.0.0.0 means listen on every interface

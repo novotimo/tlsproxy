@@ -12,7 +12,7 @@ listeners:
     target-port: 8080
 
     ## If we can't connect to the server by this time, drop the connection
-    connect-timeout: 5000
+    connect-timeout: 5
 
     ## TCP keepalive configuration, set on both the client and the backend
     ## leg. There's no idle timeout yet, so this is what bounds a peer that
@@ -57,7 +57,7 @@ listeners:
   #   target-ip: 127.0.0.1
   #   target-port: 8081
 
-  #   connect-timeout: 6000
+  #   connect-timeout: 6
 
   #   ## Note we're using the same IP/port combo for the listen socket
   #   ## That's right, we get basic load balancing too!
@@ -73,7 +73,7 @@ listeners:
   #   target-ip: 127.0.0.1
   #   target-port: 23
 
-  #   connect-timeout: 2000
+  #   connect-timeout: 2
 
   #   listen-ip: 0.0.0.0
   #   listen-port: 42023
