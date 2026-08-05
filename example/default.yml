@@ -14,13 +14,27 @@ listeners:
     ## If we can't connect to the server by this time, drop the connection
     connect-timeout: 5000
 
-    ## TCP keepalive configuration.
+    ## TCP keepalive configuration, set on both the client and the backend
+    ## leg. There's no idle timeout yet, so this is what bounds a peer that
+    ## dies without sending a FIN. All three are optional and the values below
+    ## are the defaults. A 0 is read as absent and takes the default too, since
+    ## setsockopt() rejects 0 for all three of these.
     ## keepidle: the seconds before we need to send a keepalive
     tcp-keepidle: 60
     ## keepintvl: the interval between keepalives sent
     tcp-keepintvl: 10
-    ## keepcnt: the nuber of keepalives that need to be dropped before we close
+    ## keepcnt: the number of keepalives that need to be dropped before we close
     tcp-keepcnt: 3
+
+    ## Once we're finished with a connection we keep reading from the client
+    ## and throwing it away, so that close() sends a FIN rather than a RST.
+    ## These two bound how long we're willing to do that for. Both are
+    ## optional and the values below are the defaults.
+    ## shutdown-timeout: the longest the whole teardown may take, in seconds
+    shutdown-timeout: 30
+    ## shutdown-interval: if the client sends us nothing for this many seconds,
+    ## send our FIN and leave
+    shutdown-interval: 5
 
     ## The proxy will accept connections on <listen-ip>:<listen-port>
     ## 0.0.0.0 means listen on every interface

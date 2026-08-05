@@ -130,9 +130,14 @@ When either side of a connection closes, the proxy works through
 flushing whatever is still queued for the other side, sending `close_notify` and
 then leaving. It deliberately doesn't wait for the peer's `close_notify` in
 reply, because a peer that never answers would otherwise pin the context, both
-descriptors and the worker's connection count for as long as it liked. There's a
-configurable shutdown deadline and inter-message interval bounding the whole
-thing.
+descriptors and the worker's connection count for as long as it liked.
+
+Once we're done with a connection we keep reading from the client and throwing
+it away until it stops, since closing a socket with data still sitting in its
+receive queue sends a RST rather than a FIN; nginx calls this
+`lingering_close`. Two per-listener keys bound it, `shutdown-timeout` for the
+whole teardown and `shutdown-interval` for the gap between client messages,
+defaulting to 30 and 5 seconds.
 
 ### Hardening
 
@@ -229,8 +234,11 @@ that it can drop to its own user.
 
 One YAML file. `example/default.yml` is commented throughout and doubles as the
 reference: worker count, log file and level, and then a list of listeners, each
-with a backend, a listen address, a certificate chain, a connect timeout and TCP
-keepalive settings.
+with a backend, a listen address, a certificate chain, a connect timeout, TCP
+keepalive settings and the shutdown deadlines above. The keepalive and shutdown
+keys are optional, and an absent one takes the default the example gives.
+`connect-timeout` is optional to the parser but not to the program, since
+leaving it out is read as zero; that's one of the validation gaps below.
 
 Run it as `./tlsproxy <config.yml>`, or with no argument at all, in which case
 it reads `/etc/tlsproxy/tlsproxy.yml`. That's what the Docker image does.
@@ -277,7 +285,8 @@ glibc emit a warning that `-Werror` then turns into a build failure.
 
 ## What isn't done yet
 
-This is version 0.9.0, and these are the gaps I know about.
+This is version 1.1.0, and these are the gaps I know about. `CHANGELOG.md`
+covers what changed since 1.0.0, which was mostly repair work.
 
 - **There are no benchmarks published.** There used to be a graph here, and I've
   taken it down. Going back over the methodology I found at least five ways it
@@ -323,7 +332,7 @@ This is version 0.9.0, and these are the gaps I know about.
   hold it. If you run this outside a container, put it behind a systemd unit
   with the equivalent settings.
 
-## Roadmap to 1.0
+## Roadmap
 
 1. Configurable TLS: groups including the hybrid PQC ones, ciphersuites, version
    range, and the negotiated group logged alongside the ciphersuite.
@@ -337,8 +346,9 @@ This is version 0.9.0, and these are the gaps I know about.
    boundary, what enforces each part of it, and what's deliberately out of
    scope.
 
-After 1.0: mTLS, privilege separation for the private key, re-resolving backend
-addresses, and a session cache in the shared memory that's already there.
+After those: mTLS, privilege separation for the private key, re-resolving
+backend addresses, and a session cache in the shared memory that's already
+there.
 
 ## License
 
