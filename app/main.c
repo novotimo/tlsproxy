@@ -599,7 +599,7 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     if (config->cacerts != NULL) {
         if (load_servcert(config, ctx, logfd) == 0)
             goto cleanup_fail;
-        if (load_cacerts(config, ctx, logfd))
+        if (load_cacerts(config, ctx, logfd) == 0)
             goto cleanup_fail;
     } else if (config->cert_chain != NULL) {
         if (SSL_CTX_use_certificate_chain_file(ctx, config->cert_chain) != 1) {
