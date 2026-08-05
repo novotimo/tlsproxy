@@ -17,22 +17,19 @@ env:
 
 # EXPECTED STATE OF THIS WORKFLOW
 #
-# The unit-tests job is RED on purpose right now, and the maintainer has asked
-# that it stay that way rather than be masked:
+# All four jobs are expected GREEN. Measured on main at f5f6be5 (2026-08-05):
+# 153 tests across six binaries, 6/6 passing, and Release builds clean at -O2
+# under -Werror.
 #
-#   unit-tests    29 failures out of 146 tests -- 10 of 38 in test_proxy, 7 of
-#                 20 in test_listen, 12 of 67 in test_logging. Each one pins a
-#                 finding in src/ that has not been fixed yet. They are named
-#                 after the claim they make, so the ctest output is the bug
-#                 list.
+# This job was deliberately RED for a while: each failing test pinned an
+# unfixed finding in src/, named after the claim it made, so ctest output was
+# the bug list. Those findings are fixed and the tests went green on their own,
+# which was the signal to expect. The pattern is worth reusing -- write the
+# failing test first, let the fix turn it green -- but the counts are only ever
+# true for a moment, so keep this note in step with reality. A stale number
+# here reads as a regression that never happened.
 #
-# Every other job here is expected GREEN, release-build included -- see the
-# note on that job for what it caught while it was red.
-#
-# Do not add continue-on-error to the unit-tests job. When a finding is fixed
-# its test goes green on its own, and that is the signal to expect. Keep the
-# counts above in step with reality; a stale number here reads as a regression
-# that never happened.
+# Do not add continue-on-error to the unit-tests job.
 
 jobs:
   unit-tests:
@@ -108,10 +105,11 @@ jobs:
   # coexists with the linker's --wrap machinery the mocks are built on, so the
   # suites do not have to be rebuilt differently to run here.
   #
-  # This job deliberately keys on sanitizer diagnostics rather than on the exit
-  # code. The suites exit nonzero anyway because of the pinned findings above,
-  # so an exit-code gate here would report the same known failures and drown
-  # out the thing this job exists to find.
+  # This job keys on sanitizer diagnostics rather than on the exit code. That
+  # started as a workaround for the suites exiting nonzero on pinned findings,
+  # but it is worth keeping on its own merits: UBSAN with halt_on_error=0
+  # reports and continues, so a runtime error does not move the exit code at
+  # all. The grep is the only thing that sees those.
   sanitizers:
     name: ASAN + UBSAN
     runs-on: ubuntu-latest
@@ -133,21 +131,23 @@ jobs:
     - name: Build
       run: cmake --build ${{github.workspace}}/build
 
-    # Leak detection is off for the suites that pin findings: a test that fails
-    # by design does so through cmocka's longjmp, which skips the cleanup at the
-    # end of the test function. Those leaks are an artifact of the finding, not
-    # a defect, and they come back the moment the finding is fixed. The other
-    # suites run with it on.
+    # Leak detection used to be off for test_proxy, test_listen and
+    # test_logging: a test that failed by design did so through cmocka's
+    # longjmp, which skips the cleanup at the end of the test function, so those
+    # leaks were an artifact of the pinned finding rather than a defect. Nothing
+    # fails by design any more, so the carve-out is gone. Measured 2026-08-05 on
+    # main at f5f6be5, GCC 15.3: all six suites exit 0 with detect_leaks=1 and
+    # emit no ASAN, LSAN or UBSAN diagnostics at all. If a leak turns up here on
+    # a different toolchain, that is a finding, not a reason to switch it back
+    # off.
     - name: Run under sanitizers
       run: |
         set +e
         mkdir -p san
         export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=0:suppressions=$PWD/test/ubsan.supp"
-        for t in test_queue test_config test_event; do
-          ASAN_OPTIONS=detect_leaks=1 ./build/test/$t > san/$t.log 2>&1
-        done
-        for t in test_proxy test_listen test_logging; do
-          ASAN_OPTIONS=detect_leaks=0 ./build/test/$t > san/$t.log 2>&1
+        export ASAN_OPTIONS=detect_leaks=1
+        for t in test_queue test_config test_event test_proxy test_listen test_logging; do
+          ./build/test/$t > san/$t.log 2>&1
         done
         echo "=== sanitizer diagnostics ==="
         grep -hE 'runtime error|ERROR: AddressSanitizer|ERROR: LeakSanitizer' \
@@ -194,9 +194,10 @@ jobs:
     - name: Build
       run: cmake --build ${{github.workspace}}/build
 
-    # --error-exitcode is deliberately NOT set, for the same reason the
-    # sanitizer job does not gate on the exit code: the suites already exit
-    # nonzero. The grep below is the gate.
+    # --error-exitcode is deliberately NOT set: memcheck findings should be read
+    # in context rather than collapsed into a pass/fail, and the suites' own
+    # exit codes are already gated by the unit-tests job. The ERROR SUMMARY grep
+    # below is what surfaces them here.
     - name: Run under memcheck
       run: |
         set +e

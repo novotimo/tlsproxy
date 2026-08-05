@@ -17,10 +17,15 @@ on:
 # arguments. Treat a drop as "which test stopped running", not "write a test
 # for the uncovered line".
 #
-# 75 is set just under the measured 77% line coverage over src/ so it ratchets
-# without being red on arrival. Measured with gcovr 8.6, GCC 15.3, all six
-# suites run, pinned failures included -- those abort early through cmocka's
-# longjmp, so they contribute less coverage than they will once fixed.
+# 75 was set just under the then-measured 77% line coverage over src/ so it
+# ratcheted without being red on arrival. Measured with gcovr 8.6, GCC 15.3,
+# all six suites run -- but at the time some of them still aborted early
+# through cmocka's longjmp on pinned findings, so they contributed less
+# coverage than they do now that everything passes.
+#
+# STALE: the floor has not been re-measured since the suites went green on
+# 2026-08-05. It is now certainly lower than it needs to be. Read the number
+# off the next run and raise it to just under that, once.
 env:
   COVERAGE_FLOOR: 75
 
@@ -49,9 +54,10 @@ jobs:
     - name: Build
       run: cmake --build ${{github.workspace}}/build
 
-    # ctest exits nonzero because of the pinned findings; that is expected and
-    # is gated by the unit-tests job in the other workflow, not here. What this
-    # job needs is for every suite to have RUN, so the counters are populated.
+    # `|| true` because pass/fail is the unit-tests job's business, not this
+    # one's. What this job needs is for every suite to have RUN, so the counters
+    # are populated; a red suite should still produce a coverage number rather
+    # than skipping the report and leaving the badge stale.
     - name: Run tests
       run: ctest --test-dir build || true
 
