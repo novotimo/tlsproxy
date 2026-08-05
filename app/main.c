@@ -599,7 +599,7 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     if (config->cacerts != NULL) {
         if (load_servcert(config, ctx, logfd) == 0)
             goto cleanup_fail;
-        if (load_cacerts(config, ctx, logfd))
+        if (load_cacerts(config, ctx, logfd) == 0)
             goto cleanup_fail;
     } else if (config->cert_chain != NULL) {
         if (SSL_CTX_use_certificate_chain_file(ctx, config->cert_chain) != 1) {
@@ -652,6 +652,7 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     X509 *leaf = NULL;
     if (!PEM_read_bio_X509(leaf_bio, &leaf, NULL, NULL)) {
         BIO_free(leaf_bio);
+        X509_free(leaf);
         _fatal(logfd, "Failed to load server cert", TPX_ERR_OSSL);
         return 0;
     }
@@ -660,9 +661,13 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     log_cert_load(logfd, LL_INFO, leaf, 0);
 
     if (SSL_CTX_use_certificate(ctx, leaf) != 1) {
+        X509_free(leaf);
         _fatal(logfd, "Failed to add server certificate to CTX", TPX_ERR_OSSL);
         return 0;
     }
+
+    // We can "free" leaf here because it's refcounted, and we lose our ref
+    X509_free(leaf);
     return 1;
 }
 
