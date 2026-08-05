@@ -23,6 +23,7 @@
 #include "proxy.h"
 #include "shmem.h"
 #include "timeutils.h"
+#include "version.h"
 
 
 #define TPX_MAX_EVENTS 100 /**< @brief The maximum number of events in epoll */
@@ -31,6 +32,8 @@
 #define TPX_ARG_CONFFILE 1 /**< @brief The config file argument */
 #define TPX_CONFIG_DIR "/etc/tlsproxy"
 #define TPX_DEFAULT_CONF "tlsproxy.yml"
+
+#define TPX_VERSION_FLAG "-v"
 
 #define NAME closed /**< @brief The name of the hash set */
 #define KEY_TY uint64_t /**< @brief The key type of the hash set */
@@ -92,7 +95,7 @@ extern uint32_t nproxies;
 
 /** @brief Get usage and exit */
 void usage(const char *pname) {
-    fprintf(stderr, "Usage: %s <config.yml>\n", pname);
+    fprintf(stderr, "Usage: %s [-v | <config.yml>]\n", pname);
     exit(EXIT_FAILURE);
 }
 
@@ -166,8 +169,6 @@ void block_signals(sigset_t *mask, int logfd) {
 
 /** @brief Inits OpenSSL and epoll then passes to main loop */
 int main(int argc, char *argv[]) {
-    printf("TLS Proxy starting\n");
-    
     if (argc < TPX_NARGS_MIN || argc > TPX_NARGS_MAX)
         usage(argv[0]);
 
@@ -177,11 +178,23 @@ int main(int argc, char *argv[]) {
         config_fname = malloc(cfilelen);
         strncpy(config_fname, conf_fname, cfilelen);
     } else {
+        if (strcmp(argv[1], TPX_VERSION_FLAG) == 0) {
+            printf("Version: %s\n", TLSPROXY_VERSION);
+            exit(EXIT_SUCCESS);
+        }
+
         size_t cfilelen = strlen(argv[TPX_ARG_CONFFILE]);
         config_fname = malloc(cfilelen+1);
         strncpy(config_fname, argv[TPX_ARG_CONFFILE], cfilelen);
         config_fname[cfilelen] = '\0';
     }
+
+    // Make stdout line buffered since we don't use stdout that much and
+    // we don't want any messages to be duplicated after fork
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
+    printf("TLS Proxy v%s starting\n", TLSPROXY_VERSION);
+
     tpx_config_t *tpx_config = load_config(config_fname);
 
     // Init logging ASAP
@@ -518,7 +531,8 @@ tpx_config_t *load_config(const char *config_file) {
                                            &top_schema,
                                            (cyaml_data_t **)&tpx_config, NULL);
     if (conf_err != CYAML_OK) {
-        errx(EXIT_FAILURE, "Config error: %s", cyaml_strerror(conf_err));
+        errx(EXIT_FAILURE, "Config error with file '%s': %s",
+             config_file, cyaml_strerror(conf_err));
         return NULL;
     } else if (tpx_validate_conf(tpx_config) != TPX_SUCCESS) {
         errx(EXIT_FAILURE, "Config file '%s' failed verification", config_file);

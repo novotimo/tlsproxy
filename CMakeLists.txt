@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 
-project(TLSProxy VERSION 0.9.0 LANGUAGES C)
+project(TLSProxy VERSION 1.1.0 LANGUAGES C)
 
 if (UNIT_TESTING)
   add_compile_definitions(UNIT_TESTING)
