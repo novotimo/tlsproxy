@@ -185,6 +185,8 @@ int main(int argc, char *argv[]) {
         const char *conf_fname = TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF;
         size_t cfilelen = sizeof(TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF);
         config_fname = malloc(cfilelen);
+        if (!config_fname)
+            err(EXIT_FAILURE, "main: allocating configuration filename for default filename");
         strncpy(config_fname, conf_fname, cfilelen);
     } else {
         if (strcmp(argv[1], TPX_VERSION_FLAG) == 0) {
@@ -194,6 +196,9 @@ int main(int argc, char *argv[]) {
 
         size_t cfilelen = strlen(argv[TPX_ARG_CONFFILE]);
         config_fname = malloc(cfilelen+1);
+        if (!config_fname)
+            err(EXIT_FAILURE, "main: allocating configuration filename");
+
         strncpy(config_fname, argv[TPX_ARG_CONFFILE], cfilelen);
         config_fname[cfilelen] = '\0';
     }
@@ -275,6 +280,9 @@ int main(int argc, char *argv[]) {
         // - ssl_ctxs are already there
         if (!respawn) {
             ssl_ctxs = calloc(nlisteners, sizeof(SSL_CTX *));
+            if (!ssl_ctxs)
+                _fatal(logfd, "Couldn't allocate SSL contexts", TPX_ERR_ERRNO);
+
             for (size_t i=0; i<nlisteners; ++i)
                 ssl_ctxs[i] = init_openssl(&tpx_config->listeners[i], logfd);
         }
@@ -574,6 +582,8 @@ listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len,
                            SSL_CTX **ssl_ctxs) {
     *len = tpx_config->listeners_count;
     listen_t **listeners = calloc(*len, sizeof(listen_t *));
+    if (!listeners)
+        _child_fatal("Couldn't allocate listeners", TPX_ERR_ERRNO);
     for (size_t i=0; i < *len; ++i) {
         const tpx_listen_conf_t *lconf = &tpx_config->listeners[i];
         listeners[i] = create_listener(lconf, ssl_ctxs[i]);
