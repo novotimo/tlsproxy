@@ -92,6 +92,9 @@ uint8_t in_shutdown = 0;
 size_t left_to_close = 0;
 extern uint32_t nproxies;
 
+// We move environ's pointed-to block somewhere else to write argv[0] safely
+extern char **environ;
+
 
 /** @brief Get usage and exit */
 void usage(const char *pname) {
@@ -119,6 +122,12 @@ void _child_fatal(const char *msg, int errtype) {
     log_system_err(LL_FATAL, msg, errtype);
     if (in_startup)
         errx(EXIT_FAILURE, "%s", msg);
+}
+
+void save_environ(void) {
+    for (char **cur = environ; *cur; ++cur)
+        if ((*cur = strdup(*cur)) == NULL)
+            err(EXIT_FAILURE, "duplicating environment string");
 }
 
 void init_shmem(void) {
@@ -176,6 +185,8 @@ int main(int argc, char *argv[]) {
         const char *conf_fname = TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF;
         size_t cfilelen = sizeof(TPX_CONFIG_DIR "/" TPX_DEFAULT_CONF);
         config_fname = malloc(cfilelen);
+        if (!config_fname)
+            err(EXIT_FAILURE, "main: allocating configuration filename for default filename");
         strncpy(config_fname, conf_fname, cfilelen);
     } else {
         if (strcmp(argv[1], TPX_VERSION_FLAG) == 0) {
@@ -185,6 +196,9 @@ int main(int argc, char *argv[]) {
 
         size_t cfilelen = strlen(argv[TPX_ARG_CONFFILE]);
         config_fname = malloc(cfilelen+1);
+        if (!config_fname)
+            err(EXIT_FAILURE, "main: allocating configuration filename");
+
         strncpy(config_fname, argv[TPX_ARG_CONFFILE], cfilelen);
         config_fname[cfilelen] = '\0';
     }
@@ -210,10 +224,29 @@ int main(int argc, char *argv[]) {
     log_startup(logfd, LL_INFO, argc, argv);
     log_config_load(logfd, LL_INFO, tpx_config);
     
-    // This can possibly overwrite environ a bit, but we don't use it anyway
-    for (int i=0; i<argc; ++i)
-        memset(argv[i], 0, strlen(argv[i]));
-    sprintf(argv[0], "tlsproxy: master");
+    // This can possibly overwrite environ a bit, so let's save it
+    char **envp;
+
+    // Find the start of the last envvar
+    for (envp = environ; *envp; ++envp);
+
+    // Don't go before the start of environ
+    if (envp != environ)
+        --envp;
+
+    // This is the whole block we're working with
+    char *environ_end;
+    if (*envp)
+        environ_end = *envp + strlen(*envp);
+    else
+        environ_end = argv[argc-1] + strlen(argv[argc-1]);
+    save_environ();
+
+    // Now, we can just zero out the whole block of argv[0] to envp[last]
+    // The assumption here is that that's a contiguous block
+    size_t block_size = (size_t)(environ_end - argv[0]);
+    memset(argv[0], 0, block_size);
+    snprintf(argv[0], block_size, "tlsproxy: master");
     
     /* I hate SIGPIPE! */
     sigset_t mask;
@@ -247,6 +280,9 @@ int main(int argc, char *argv[]) {
         // - ssl_ctxs are already there
         if (!respawn) {
             ssl_ctxs = calloc(nlisteners, sizeof(SSL_CTX *));
+            if (!ssl_ctxs)
+                _fatal(logfd, "Couldn't allocate SSL contexts", TPX_ERR_ERRNO);
+
             for (size_t i=0; i<nlisteners; ++i)
                 ssl_ctxs[i] = init_openssl(&tpx_config->listeners[i], logfd);
         }
@@ -262,7 +298,7 @@ int main(int argc, char *argv[]) {
                 exit(EXIT_FAILURE);
             case 0:
                 free(pids);
-                sprintf(argv[0], "tlsproxy: worker");
+                snprintf(argv[0], block_size, "tlsproxy: worker");
 
                 // Make sure we die if the parent process does
                 prctl(PR_SET_PDEATHSIG, SIGHUP);
@@ -546,6 +582,8 @@ listen_t **start_listeners(tpx_config_t *tpx_config, int epollfd, size_t *len,
                            SSL_CTX **ssl_ctxs) {
     *len = tpx_config->listeners_count;
     listen_t **listeners = calloc(*len, sizeof(listen_t *));
+    if (!listeners)
+        _child_fatal("Couldn't allocate listeners", TPX_ERR_ERRNO);
     for (size_t i=0; i < *len; ++i) {
         const tpx_listen_conf_t *lconf = &tpx_config->listeners[i];
         listeners[i] = create_listener(lconf, ssl_ctxs[i]);

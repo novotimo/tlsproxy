@@ -1025,27 +1025,35 @@ static void handle_proxy_ignores_high_tag_bits(void **state) {
 /* proxy_handle_read()                                                 */
 /* ------------------------------------------------------------------ */
 
-/* buflen is declared 0 at the top of proxy_handle_read() and is not assigned
-   until the branch below this line, so `buflen > 0` is false on every call
-   without exception. Commit d7f960d ("Remove all compile warnings", 2026-08-01)
-   added the line to quiet a maybe-uninitialized warning and put it above the
-   initialisation it was describing.
+/* The three entry invariants at the top of proxy_handle_read() have to hold on
+   a queue that has never been read into, which is the state every proxy starts
+   in. This pins the repair of a misplaced one: `buflen > 0` sat above the
+   branch that gives buflen a value, so it was false on every call without
+   exception, and since Release defines NDEBUG the abort landed only on
+   assertion-enabled builds - the proxy died on the first byte either side sent,
+   which is what made Debug unrunnable and the read path untestable. It reads
+   `buflen < INT_MAX` now, which is what the surrounding casts to int actually
+   depend on.
 
-   Release defines NDEBUG, so the shipped image drops it and nothing downstream
-   reads buflen before it is assigned - no production effect. What it does kill
-   is every assertion-enabled build: the proxy aborts on the first byte either
-   side sends, which means Debug is unrunnable and the read path is untestable.
-   That is the reason the tests in this file were commented out rather than
-   repaired, and before __assert_fail was interposed the attempt took the whole
-   binary down with no report. The invariant is worth keeping - just below the
-   branch that gives buflen a value. */
+   The read has to be armed even though the invariants are all checked before
+   the loop. serv_fd is a made-up number, and __wrap_read forwards to
+   __real_read whenever the mock queue is empty, so an unarmed call reads
+   whatever descriptor the process happens to have at that number: closed and
+   EBADF on CI, and a blocking pipe or socket under a shell that leaks fds,
+   where the suite stops dead here. EOF ends the loop on the first pass and
+   leaves the invariants as the only thing the test turns on. */
 static void read_entry_invariants_hold_on_a_fresh_queue(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_READY);
     p->serv_fd = 11;
     p->hand_shaken = 1;
 
-    // No I/O mocks: nothing here should get as far as read().
+    /* Value/errno pair: WRAP_FUN_ERR consumes an errno after each return
+       value, and arming the 0 alone would leave the wrapper taking its errno
+       off an empty queue. */
+    will_return(__wrap_read, 0);
+    will_return(__wrap_read, 0);
+
     (void)proxy_handle_read(p, 0);
     assert_int_equal(assert_fail_calls, 0);
 
