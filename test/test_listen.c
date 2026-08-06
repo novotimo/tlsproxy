@@ -241,25 +241,38 @@ static int opt_was_set(int level, int optname) {
 /* create_proxy() is recorded AND forwarded on demand. Most tests want a canned
    answer, but the peer-address test needs the real allocator to run so it can
    look at what actually landed in the proxy. has_mock() picks between them. */
+/* The six values after the listener are the whole of what connect_conf(),
+   keepalive_conf() and shutdown_conf() do, so they are recorded rather than
+   discarded: an absent key reaching create_proxy() as 0 is what
+   handle_accept_uses_the_default_* below are about, and it is invisible to a
+   recorder that only keeps the return value. conn_timeout is uint64_t here
+   because that is what inc/proxy.h says; --wrap does not check, so a narrower
+   parameter would link and read the low half of the register. */
 static struct {
     unsigned int calls;
     int accepted_fd[MAX_RECORDED];
     SSL *ssl[MAX_RECORDED];
     listen_t *listener[MAX_RECORDED];
+    uint64_t conn_timeout[MAX_RECORDED];
+    int keepidle[MAX_RECORDED];
+    int keepintvl[MAX_RECORDED];
+    int keepcnt[MAX_RECORDED];
+    uint64_t shutdown_timeout[MAX_RECORDED];
+    uint64_t shutdown_interval[MAX_RECORDED];
 } create_proxy_log;
 
 proxy_t *__real_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
-                             unsigned int conn_timeout,
+                             uint64_t conn_timeout,
                              int keepidle, int keepintvl, int keepcnt,
                              uint64_t shutdown_timeout,
                              uint64_t shutdown_interval);
 proxy_t *__wrap_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
-                             unsigned int conn_timeout,
+                             uint64_t conn_timeout,
                              int keepidle, int keepintvl, int keepcnt,
                              uint64_t shutdown_timeout,
                              uint64_t shutdown_interval);
 proxy_t *__wrap_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
-                             unsigned int conn_timeout,
+                             uint64_t conn_timeout,
                              int keepidle, int keepintvl, int keepcnt,
                              uint64_t shutdown_timeout,
                              uint64_t shutdown_interval) {
@@ -267,6 +280,14 @@ proxy_t *__wrap_create_proxy(int accepted_fd, SSL *ssl, listen_t *listener,
         create_proxy_log.accepted_fd[create_proxy_log.calls] = accepted_fd;
         create_proxy_log.ssl[create_proxy_log.calls] = ssl;
         create_proxy_log.listener[create_proxy_log.calls] = listener;
+        create_proxy_log.conn_timeout[create_proxy_log.calls] = conn_timeout;
+        create_proxy_log.keepidle[create_proxy_log.calls] = keepidle;
+        create_proxy_log.keepintvl[create_proxy_log.calls] = keepintvl;
+        create_proxy_log.keepcnt[create_proxy_log.calls] = keepcnt;
+        create_proxy_log.shutdown_timeout[create_proxy_log.calls] =
+            shutdown_timeout;
+        create_proxy_log.shutdown_interval[create_proxy_log.calls] =
+            shutdown_interval;
     }
     create_proxy_log.calls++;
     if (has_mock())
@@ -536,6 +557,111 @@ static void handle_accept_succeeds_and_keeps_the_descriptor(void **state) {
     assert_int_equal(close_log.calls, 0);
     assert_int_equal(proxy_close_log.calls, 0);
     assert_int_equal(create_proxy_log.accepted_fd[0], ACCEPTED_FD);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* handle_accept(): the optional keys and their defaults               */
+/* ------------------------------------------------------------------ */
+
+/* libcyaml reads an absent optional unsigned as 0, so every one of these
+   arrives at handle_accept() indistinguishable from a key written as 0, and
+   connect_conf()/keepalive_conf()/shutdown_conf() are what turn it back into
+   something usable. Each of them is a value the socket layer cannot take: a
+   connect timeout of 0 expires on the next pass through the loop, and
+   setsockopt() refuses 0 for all three TCP_KEEP* options with EINVAL. */
+static void accept_through_to_create_proxy(void) {
+    accept_up_to_ssl();
+    will_return(__wrap_SSL_new, FAKE_SSL);
+    will_return(__wrap_SSL_set_fd, 1);
+    will_return(__wrap_SSL_set_accept_state, NULL);
+    will_return(__wrap_create_proxy, FAKE_PROXY);
+    will_return(__wrap_proxy_add_to_epoll, TPX_SUCCESS);
+}
+
+static void handle_accept_defaults_an_absent_connect_timeout(void **state) {
+    (void)state;
+    listen_t *l = make_listener();
+    conf_fixture.connect_timeout = 0;
+
+    accept_through_to_create_proxy();
+    assert_int_equal(handle_accept(l, 9), TPX_SUCCESS);
+
+    assert_int_equal(create_proxy_log.conn_timeout[0],
+                     TPX_DEFAULT_CONNECT_TIMEOUT);
+}
+
+/* The other half of the pair: a configured value has to survive, or the test
+   above is satisfied by a function that returns the default unconditionally. */
+static void handle_accept_passes_a_configured_connect_timeout_through(
+        void **state) {
+    (void)state;
+    listen_t *l = make_listener();
+    conf_fixture.connect_timeout = 5;
+
+    accept_through_to_create_proxy();
+    assert_int_equal(handle_accept(l, 9), TPX_SUCCESS);
+
+    assert_int_equal(create_proxy_log.conn_timeout[0], 5);
+}
+
+static void handle_accept_defaults_absent_keepalives(void **state) {
+    (void)state;
+    listen_t *l = make_listener();
+    conf_fixture.tcp_keepidle = 0;
+    conf_fixture.tcp_keepintvl = 0;
+    conf_fixture.tcp_keepcnt = 0;
+
+    accept_through_to_create_proxy();
+    assert_int_equal(handle_accept(l, 9), TPX_SUCCESS);
+
+    assert_int_equal(create_proxy_log.keepidle[0], TPX_DEFAULT_TCP_KEEPIDLE);
+    assert_int_equal(create_proxy_log.keepintvl[0], TPX_DEFAULT_TCP_KEEPINTVL);
+    assert_int_equal(create_proxy_log.keepcnt[0], TPX_DEFAULT_TCP_KEEPCNT);
+}
+
+static void handle_accept_passes_configured_keepalives_through(void **state) {
+    (void)state;
+    listen_t *l = make_listener();
+    conf_fixture.tcp_keepidle = 11;
+    conf_fixture.tcp_keepintvl = 22;
+    conf_fixture.tcp_keepcnt = 33;
+
+    accept_through_to_create_proxy();
+    assert_int_equal(handle_accept(l, 9), TPX_SUCCESS);
+
+    assert_int_equal(create_proxy_log.keepidle[0], 11);
+    assert_int_equal(create_proxy_log.keepintvl[0], 22);
+    assert_int_equal(create_proxy_log.keepcnt[0], 33);
+}
+
+static void handle_accept_defaults_absent_shutdown_timers(void **state) {
+    (void)state;
+    listen_t *l = make_listener();
+    conf_fixture.shutdown_timeout = 0;
+    conf_fixture.shutdown_interval = 0;
+
+    accept_through_to_create_proxy();
+    assert_int_equal(handle_accept(l, 9), TPX_SUCCESS);
+
+    assert_int_equal(create_proxy_log.shutdown_timeout[0],
+                     TPX_DEFAULT_SHUTDOWN_TIMEOUT);
+    assert_int_equal(create_proxy_log.shutdown_interval[0],
+                     TPX_DEFAULT_SHUTDOWN_INTERVAL);
+}
+
+static void handle_accept_passes_configured_shutdown_timers_through(
+        void **state) {
+    (void)state;
+    listen_t *l = make_listener();
+    conf_fixture.shutdown_timeout = 44;
+    conf_fixture.shutdown_interval = 7;
+
+    accept_through_to_create_proxy();
+    assert_int_equal(handle_accept(l, 9), TPX_SUCCESS);
+
+    assert_int_equal(create_proxy_log.shutdown_timeout[0], 44);
+    assert_int_equal(create_proxy_log.shutdown_interval[0], 7);
 }
 
 
@@ -930,6 +1056,22 @@ int main(void) {
             handle_accept_succeeds_and_keeps_the_descriptor, reset_recorders),
         cmocka_unit_test_setup(handle_accept_passes_peer_address_to_the_proxy,
                                reset_recorders),
+
+        cmocka_unit_test_setup(handle_accept_defaults_an_absent_connect_timeout,
+                               reset_recorders),
+        cmocka_unit_test_setup(
+            handle_accept_passes_a_configured_connect_timeout_through,
+            reset_recorders),
+        cmocka_unit_test_setup(handle_accept_defaults_absent_keepalives,
+                               reset_recorders),
+        cmocka_unit_test_setup(
+            handle_accept_passes_configured_keepalives_through,
+            reset_recorders),
+        cmocka_unit_test_setup(handle_accept_defaults_absent_shutdown_timers,
+                               reset_recorders),
+        cmocka_unit_test_setup(
+            handle_accept_passes_configured_shutdown_timers_through,
+            reset_recorders),
 
         cmocka_unit_test_setup(bind_listen_sock_sets_reuseaddr,
                                reset_recorders),

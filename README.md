@@ -248,6 +248,13 @@ kernel will accept, and a `cert-chain` given together with `cacerts` are all
 refused with the name of the listener they came from. The same checks run on
 reload, where they go to the log instead of stderr.
 
+The private key file is checked too, though only as a warning, since a mode
+that is wrong in one deployment is deliberate in another. A `servkey` that
+group or other can read, write or execute draws a line at startup and on every
+reload, on stderr as well as in the log so that a master running without a
+`logfile` still gets told. A key we can't `stat()` is passed over, since
+OpenSSL fails on it a moment later and has more to say about why.
+
 Run it as `./tlsproxy <config.yml>`, or with no argument at all, in which case
 it reads `/etc/tlsproxy/tlsproxy.yml`. That's what the Docker image does.
 
@@ -347,10 +354,8 @@ covers what changed since 1.0.0, which was mostly repair work.
 2. Handshake and idle timeouts, and an optional cap on connection lifetime.
 3. File descriptor exhaustion: raise `RLIMIT_NOFILE`, handle `EMFILE` without
    spinning, add `max-connections`, and then measure the real ceiling.
-4. A warning at startup when the private key file is group- or world-readable,
-   which is the last of the configuration checks in #46 still outstanding.
-5. The benchmark rebuild described above.
-6. A security model section in `doc/ARCHITECTURE.md` covering the trust
+4. The benchmark rebuild described above.
+5. A security model section in `doc/ARCHITECTURE.md` covering the trust
    boundary, what enforces each part of it, and what's deliberately out of
    scope.
 

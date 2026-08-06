@@ -123,6 +123,13 @@ Teardown is now a state machine, working through `PS_SERVER_DISCONNECTED`,
   listener with degraded keepalive still serves traffic and a worker that exits
   does not, and a value that would provoke a refusal no longer gets past
   startup anyway.
+- A private key that group or other can read, write or execute is warned about
+  at startup and on every reload. It stays a warning rather than a refusal,
+  since the mode that is wrong for a key in one deployment is deliberate in
+  another, and it goes to stderr as well as the log, because a master with no
+  `logfile` has its logger disabled and would otherwise be told nothing. A key
+  that can't be `stat()`ed is left alone for OpenSSL to fail on, which it does
+  a moment later with more to say about the reason.
 - Reload validates the new configuration with the same code as startup.
   `handle_reload()` carried a hand-copied subset of the listener checks under a
   comment asking that the two be kept in step, and they had already drifted,
