@@ -62,3 +62,6 @@ compile_commands.json
 inc/version.h
 
 example/tlsproxy.log
+
+# Local clangd flag overrides
+.clangd
