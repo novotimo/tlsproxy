@@ -13,6 +13,13 @@
 #define TPX_DEFAULT_TCP_KEEPIDLE      60
 #define TPX_DEFAULT_TCP_KEEPINTVL     10
 #define TPX_DEFAULT_TCP_KEEPCNT       3
+
+// These are the maximum values usable according to include/net/tcp.h
+// in the Linux kernel source
+#define TPX_MAX_TCP_KEEPIDLE      32767
+#define TPX_MAX_TCP_KEEPINTVL     32767
+#define TPX_MAX_TCP_KEEPCNT       127
+
 /* Shutdown should take at most 30 seconds, and if we don't get any messages
  * within 5 seconds, we should send our FIN and leave */
 #define TPX_DEFAULT_SHUTDOWN_TIMEOUT  30

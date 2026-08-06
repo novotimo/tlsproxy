@@ -243,9 +243,10 @@ which the example names in the comment beside it. Every timeout in there is in
 seconds.
 
 What the schema can't express is checked after parsing, so a port outside 1 to
-65535, an `nworkers` of zero or above 128, and a `cert-chain` given together
-with `cacerts` are all refused with the name of the listener they came from.
-The same checks run on reload, where they go to the log instead of stderr.
+65535, an `nworkers` of zero or above 128, a `tcp-keep*` value above what the
+kernel will accept, and a `cert-chain` given together with `cacerts` are all
+refused with the name of the listener they came from. The same checks run on
+reload, where they go to the log instead of stderr.
 
 Run it as `./tlsproxy <config.yml>`, or with no argument at all, in which case
 it reads `/etc/tlsproxy/tlsproxy.yml`. That's what the Docker image does.

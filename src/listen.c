@@ -190,22 +190,30 @@ int bind_listen_sock(listen_t *l, const char *host,
 
         // These options are set here and inherited by accepted sockets
         if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepalive)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable keepalive on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = keepidle;
         if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,
                        &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepidle)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp keepidle on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = keepintvl;
         if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL,
                        &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepintvl)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp keepintvl on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = keepcnt;
         if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,
                        &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepcnt)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp keepcnt on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = 0;
         if (lp->ai_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6,

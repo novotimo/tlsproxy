@@ -1,5 +1,6 @@
-# TCP_KEEPIDLE is passed to setsockopt() as an int, so a uint above INT_MAX
-# arrives negative and is rejected with EINVAL well after startup.
+# One above MAX_TCP_KEEPIDLE. The bound is the kernel's rather than INT_MAX's,
+# since setsockopt() returns EINVAL from 32768 up and the field is a uint, so
+# everything between the two used to pass validation and fail at bind time.
 
 nworkers: 1
 listeners:
@@ -7,7 +8,7 @@ listeners:
     target-ip: 127.0.0.1
     target-port: 8080
 
-    tcp-keepidle: 2147483648
+    tcp-keepidle: 32768
 
     listen-ip: 0.0.0.0
     listen-port: 8443

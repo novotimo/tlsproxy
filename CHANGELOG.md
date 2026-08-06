@@ -113,6 +113,16 @@ Teardown is now a state machine, working through `PS_SERVER_DISCONNECTED`,
   connection for a reason the error didn't name, while `bind()` reads a
   `listen-port` of 0 as a request for whatever ephemeral port is spare, which
   puts the listener somewhere nothing was told to connect to.
+- The three `tcp-keep*` values are bounded by what the kernel takes, 32767 for
+  `tcp-keepidle` and `tcp-keepintvl` and 127 for `tcp-keepcnt`, rather than by
+  `INT_MAX`. Everything between the two used to validate cleanly and then fail
+  `setsockopt()` with EINVAL in `bind_listen_sock()`, which runs in the worker
+  after the master has forked, so it was reported to nobody and killed the
+  worker. All four keepalive `setsockopt()` calls on the listening socket are
+  warnings now, `SO_KEEPALIVE` along with the three `TCP_KEEP*` ones, since a
+  listener with degraded keepalive still serves traffic and a worker that exits
+  does not, and a value that would provoke a refusal no longer gets past
+  startup anyway.
 - Reload validates the new configuration with the same code as startup.
   `handle_reload()` carried a hand-copied subset of the listener checks under a
   comment asking that the two be kept in step, and they had already drifted,

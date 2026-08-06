@@ -1,0 +1,19 @@
+# All three keepalive values sitting exactly on their kernel maximum. Paired
+# with badconf18 to badconf20, which are one above each, so an off-by-one in
+# either direction fails a test rather than passing both.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    tcp-keepidle: 32767
+    tcp-keepintvl: 32767
+    tcp-keepcnt: 127
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

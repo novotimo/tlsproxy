@@ -1,4 +1,4 @@
-# As badconf18, for the interval between probes.
+# As badconf18, for the interval between probes, which shares its bound.
 
 nworkers: 1
 listeners:
@@ -6,7 +6,7 @@ listeners:
     target-ip: 127.0.0.1
     target-port: 8080
 
-    tcp-keepintvl: 2147483648
+    tcp-keepintvl: 32768
 
     listen-ip: 0.0.0.0
     listen-port: 8443

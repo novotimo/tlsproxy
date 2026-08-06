@@ -695,6 +695,58 @@ static void bind_listen_sock_sets_keepalive(void **state) {
     assert_int_equal(cnt, 3);
 }
 
+/* The keepalive tuning calls were err(EXIT_FAILURE) until the config validator
+   learned the kernel's bounds, and fatal was the wrong half of that pair.
+   bind_listen_sock() runs in the worker, after the master has forked, so
+   exiting there turns one refused socket option into every worker dying and
+   the master reforking them into the same exit. The socket has to come back
+   bound even when the kernel says no.
+
+   Four queued returns because the mock queue applies to setsockopt in call
+   order: SO_REUSEADDR, SO_REUSEPORT and SO_KEEPALIVE succeed, TCP_KEEPIDLE
+   fails, and the two after it go to the real syscall. */
+static void bind_listen_sock_survives_a_refused_keepidle(void **state) {
+    (void)state;
+    listen_t l;
+    memset(&l, 0, sizeof(l));
+
+    will_return(__wrap_setsockopt, 0);
+    will_return(__wrap_setsockopt, 0);
+    will_return(__wrap_setsockopt, 0);
+    will_return(__wrap_setsockopt, -1);
+
+    int fd = bind_listen_sock(&l, "127.0.0.1", 0, 60, 10, 3);
+    assert_int_not_equal(fd, -1);
+    assert_true(opt_was_set(IPPROTO_TCP, TCP_KEEPIDLE));
+    assert_true(opt_was_set(IPPROTO_TCP, TCP_KEEPCNT));
+
+    close(fd);
+}
+
+/* SO_KEEPALIVE is the master switch rather than a tuning value, so a refusal
+   here costs more than the three above it: the other options are copied on to
+   accepted sockets but do nothing without this one, and with no idle timeout
+   anywhere, that leaves a client which dies without a FIN holding a proxy_t,
+   two descriptors and its slot in nproxies indefinitely. It is a warning
+   anyway, on the grounds that a listener with degraded keepalive still serves
+   traffic and a worker that exits does not. This is the test to change if that
+   trade is ever decided the other way. */
+static void bind_listen_sock_survives_a_refused_keepalive(void **state) {
+    (void)state;
+    listen_t l;
+    memset(&l, 0, sizeof(l));
+
+    will_return(__wrap_setsockopt, 0);
+    will_return(__wrap_setsockopt, 0);
+    will_return(__wrap_setsockopt, -1);
+
+    int fd = bind_listen_sock(&l, "127.0.0.1", 0, 60, 10, 3);
+    assert_int_not_equal(fd, -1);
+    assert_true(opt_was_set(SOL_SOCKET, SO_KEEPALIVE));
+
+    close(fd);
+}
+
 /* Port 0 rather than a hardcoded port: the old suite bound 47239 and left a
    comment accepting defeat if anything else had it. The kernel will hand out a
    free ephemeral port every time, so there is nothing to lose a race with. */
@@ -882,6 +934,10 @@ int main(void) {
         cmocka_unit_test_setup(bind_listen_sock_sets_reuseaddr,
                                reset_recorders),
         cmocka_unit_test_setup(bind_listen_sock_sets_reuseport,
+                               reset_recorders),
+        cmocka_unit_test_setup(bind_listen_sock_survives_a_refused_keepidle,
+                               reset_recorders),
+        cmocka_unit_test_setup(bind_listen_sock_survives_a_refused_keepalive,
                                reset_recorders),
         cmocka_unit_test_setup(bind_listen_sock_sets_keepalive,
                                reset_recorders),

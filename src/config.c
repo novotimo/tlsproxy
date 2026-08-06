@@ -11,7 +11,7 @@
 // fork bomb themselves
 #define TPX_WORKERS_MAX 128
 
-#define TPX_LISTENER_NAME_MAXLEN 128
+#define TPX_LISTENER_NAME_TRUNCATE_AT 128
 #define TPX_CONFIG_ERR_MSG "Config error in listener "
 #define TPX_CONFIG_ERR_MSGLEN (sizeof(TPX_CONFIG_ERR_MSG)-1)
 
@@ -29,7 +29,7 @@ write_err(int *logfd, const char *err_type, const char *err_msg) {
  * Verify config rules that can't be verified by YAML parser
  */
 int tpx_validate_conf_l(const tpx_listen_conf_t *config, int *logfd) {
-    char error_type[TPX_CONFIG_ERR_MSGLEN + TPX_LISTENER_NAME_MAXLEN + 1];
+    char error_type[TPX_CONFIG_ERR_MSGLEN + TPX_LISTENER_NAME_TRUNCATE_AT + 1];
 
     // We're purposely truncating the listener's name
     if (snprintf(error_type, sizeof(error_type),
@@ -61,17 +61,20 @@ int tpx_validate_conf_l(const tpx_listen_conf_t *config, int *logfd) {
                   "'target-port' must be a valid port number between 1 and "
                   "65535 inclusive");
         return TPX_FAILURE;
-    } else if (config->tcp_keepidle > INT_MAX) {
+    } else if (config->tcp_keepidle > TPX_MAX_TCP_KEEPIDLE) {
         write_err(logfd, error_type,
-                  "'tcp-keepidle' is too large for setsockopt()");
+                  "'tcp-keepidle' must be at most "
+                  TPX_STR(TPX_MAX_TCP_KEEPIDLE));
         return TPX_FAILURE;
-    } else if (config->tcp_keepintvl > INT_MAX) {
+    } else if (config->tcp_keepintvl > TPX_MAX_TCP_KEEPINTVL) {
         write_err(logfd, error_type,
-                  "'tcp-keepintvl' is too large for setsockopt()");
+                  "'tcp-keepintvl' must be at most "
+                  TPX_STR(TPX_MAX_TCP_KEEPINTVL));
         return TPX_FAILURE;
-    } else if (config->tcp_keepcnt > INT_MAX) {
+    } else if (config->tcp_keepcnt > TPX_MAX_TCP_KEEPCNT) {
         write_err(logfd, error_type,
-                  "'tcp-keepcnt' is too large for setsockopt()");
+                  "'tcp-keepcnt' must be at most "
+                  TPX_STR(TPX_MAX_TCP_KEEPCNT));
         return TPX_FAILURE;
     }
     return TPX_SUCCESS;

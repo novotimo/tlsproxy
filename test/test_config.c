@@ -259,17 +259,20 @@ static void listen_port_of_zero_is_rejected(void **state) {
     assert_int_equal(vfy_f(CFG_DIR "/badconf21.yml", NULL), TPX_FAILURE);
 }
 
-static void tcp_keepidle_above_int_max_is_rejected(void **state) {
+/* One above each kernel bound. These three and
+ * keepalive_values_at_the_kernel_maximum_validate are a pair: the bounds are
+ * inclusive, so moving either of them by one breaks one of the two. */
+static void tcp_keepidle_above_the_kernel_maximum_is_rejected(void **state) {
     (void)state;
     assert_int_equal(vfy_f(CFG_DIR "/badconf18.yml", NULL), TPX_FAILURE);
 }
 
-static void tcp_keepintvl_above_int_max_is_rejected(void **state) {
+static void tcp_keepintvl_above_the_kernel_maximum_is_rejected(void **state) {
     (void)state;
     assert_int_equal(vfy_f(CFG_DIR "/badconf19.yml", NULL), TPX_FAILURE);
 }
 
-static void tcp_keepcnt_above_int_max_is_rejected(void **state) {
+static void tcp_keepcnt_above_the_kernel_maximum_is_rejected(void **state) {
     (void)state;
     assert_int_equal(vfy_f(CFG_DIR "/badconf20.yml", NULL), TPX_FAILURE);
 }
@@ -365,6 +368,11 @@ static void empty_scalars_validate(void **state) {
     assert_int_equal(vfy_f(CFG_DIR "/goodconf6.yml", NULL), TPX_SUCCESS);
 }
 
+static void keepalive_values_at_the_kernel_maximum_validate(void **state) {
+    (void)state;
+    assert_int_equal(vfy_f(CFG_DIR "/goodconf7.yml", NULL), TPX_SUCCESS);
+}
+
 
 int main(void) {
     g_shmem = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE,
@@ -401,12 +409,12 @@ int main(void) {
         cmocka_unit_test_setup(listen_port_above_the_port_range_is_rejected,
                                reset_logger),
         cmocka_unit_test_setup(listen_port_of_zero_is_rejected, reset_logger),
-        cmocka_unit_test_setup(tcp_keepidle_above_int_max_is_rejected,
-                               reset_logger),
-        cmocka_unit_test_setup(tcp_keepintvl_above_int_max_is_rejected,
-                               reset_logger),
-        cmocka_unit_test_setup(tcp_keepcnt_above_int_max_is_rejected,
-                               reset_logger),
+        cmocka_unit_test_setup(
+            tcp_keepidle_above_the_kernel_maximum_is_rejected, reset_logger),
+        cmocka_unit_test_setup(
+            tcp_keepintvl_above_the_kernel_maximum_is_rejected, reset_logger),
+        cmocka_unit_test_setup(
+            tcp_keepcnt_above_the_kernel_maximum_is_rejected, reset_logger),
 
         cmocka_unit_test(the_schema_rejects_a_negative_nworkers),
         cmocka_unit_test(the_schema_rejects_an_empty_listener_list),
@@ -428,6 +436,8 @@ int main(void) {
         cmocka_unit_test_setup(
             nworkers_at_the_cap_and_a_very_long_name_validate, reset_logger),
         cmocka_unit_test_setup(empty_scalars_validate, reset_logger),
+        cmocka_unit_test_setup(keepalive_values_at_the_kernel_maximum_validate,
+                               reset_logger),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
