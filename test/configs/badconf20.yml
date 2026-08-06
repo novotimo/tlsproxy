@@ -1,0 +1,15 @@
+# As badconf18, for the probe count.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    tcp-keepcnt: 2147483648
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

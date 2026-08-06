@@ -80,7 +80,8 @@ target-ip: 127.0.0.1
 #target-ip: 10.255.255.1
 target-port: 8080
 
-## If we can't connect to the server by this time, drop the connection
+## If we can't connect to the server by this time, drop the connection.
+## Optional, in seconds, and leaving it out takes 60.
 connect-timeout: 5
 
 ## The proxy will accept connections on <listen-ip>:<listen-port>

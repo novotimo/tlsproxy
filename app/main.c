@@ -570,7 +570,7 @@ tpx_config_t *load_config(const char *config_file) {
         errx(EXIT_FAILURE, "Config error with file '%s': %s",
              config_file, cyaml_strerror(conf_err));
         return NULL;
-    } else if (tpx_validate_conf(tpx_config) != TPX_SUCCESS) {
+    } else if (tpx_validate_conf(tpx_config, NULL) != TPX_SUCCESS) {
         errx(EXIT_FAILURE, "Config file '%s' failed verification", config_file);
     }
     
@@ -772,42 +772,8 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
         return 0;
     }
 
-    // This could be done better, I imagine. Make sure to watch config.c for
-    // changes to the logic in tpx_validate_conf
-    if (new_config->listeners_count < 1) {
-        log_system_err_m_ex(
-            *logfd, LL_ERROR, "Couldn't reload config", "No listeners provided");
+    if (tpx_validate_conf(new_config, logfd) == TPX_FAILURE)
         goto cleanup_conf;
-    }
-
-    for (size_t i=0; i<new_config->listeners_count; ++i) {
-        const tpx_listen_conf_t *listen_conf = &new_config->listeners[i];
-        if (!listen_conf->cert_chain && !listen_conf->cacerts) {
-            log_system_err_m_ex(
-                *logfd, LL_ERROR, "Couldn't reload config",
-                "Either 'cert-chain' or 'cacerts' must be provided");
-            goto cleanup_conf;
-        } else if (listen_conf->cert_chain &&
-                   (listen_conf->cacerts || listen_conf->servcert)) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'cert-chain' can't be used together with 'cacerts'"
-                                " or 'servcert'");
-            goto cleanup_conf;
-        } else if (listen_conf->cacerts && !listen_conf->servcert) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'servcert' must be specified if 'cacerts' is"
-                );
-            goto cleanup_conf;
-        } else if (listen_conf->listen_port > UINT16_MAX) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'listen-port' must be a valid port");
-            goto cleanup_conf;
-        } else if (listen_conf->target_port > UINT16_MAX) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'target-port' must be a valid port");
-            goto cleanup_conf;
-        }
-    }
 
     uint8_t old_enabled = g_shmem->logger.enabled;
     uint8_t old_loglevel = g_shmem->logger.loglevel;

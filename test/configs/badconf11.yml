@@ -1,11 +1,13 @@
-# Missing servcert
+# Missing servcert. cacerts carries the rest of the chain but not the leaf we
+# offer to clients, so it is half a configuration on its own.
 
 nworkers: 1
 listeners:
   - name: ""
     target-ip: 127.0.0.1
     target-port: 9999
-    listen-ip: 9999
+    listen-ip: 127.0.0.43
+    listen-port: 9999
     cacerts:
       - SC
     servkey: SK

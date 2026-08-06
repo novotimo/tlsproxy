@@ -1,12 +1,15 @@
-# Less than minimal
+# Less than minimal. Every string here comes back from libcyaml as a
+# zero-length string rather than NULL, which is what keeps the cert-chain
+# check on the passing side. Both ports are 1 because that is the floor for
+# each of them; badconf15 and badconf21 cover 0.
 
 
 nworkers: 1
 listeners:
-  - name: 
-    target-ip: 
-    target-port: 0
-    listen-ip: 
-    listen-port: 0
+  - name:
+    target-ip:
+    target-port: 1
+    listen-ip:
+    listen-port: 1
     cert-chain:
     servkey:

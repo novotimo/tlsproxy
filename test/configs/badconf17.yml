@@ -1,0 +1,14 @@
+# The same truncation on the listening side, where it would bind a port the
+# operator never asked for.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    listen-ip: 0.0.0.0
+    listen-port: 65536
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

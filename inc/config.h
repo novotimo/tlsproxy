@@ -176,13 +176,19 @@ static const cyaml_schema_value_t top_schema = {
         CYAML_FLAG_POINTER, tpx_config_t, top_mapping_schema),
 };
 
-/** Validate the configuration file, checking that cacerts and cert-chain
- * aren't both configured together.
+/** Validate the configuration file, checking the rules the cyaml schema can't
+ * express, such as cacerts and cert-chain not being configured together.
+ *
+ * Both take the same two destinations, since the master has a log to write to
+ * on reload and nothing but stderr at startup.
  *
  * @param config The configuration object
+ * @param logfd Where complaints go: the master's log descriptor, or NULL for
+ *              stderr. Not the fd itself, so that a master logging to
+ *              descriptor 0 is still distinguishable from one with no log.
  * @return Returns TPX_FAILURE on failure and TPX_SUCCESS on success.
  */
-int tpx_validate_conf_l(const tpx_listen_conf_t *config);
-int tpx_validate_conf(const tpx_config_t *config);
+int tpx_validate_conf_l(const tpx_listen_conf_t *config, int *logfd);
+int tpx_validate_conf(const tpx_config_t *config, int *logfd);
 
 #endif

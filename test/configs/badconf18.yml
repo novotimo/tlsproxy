@@ -1,0 +1,16 @@
+# TCP_KEEPIDLE is passed to setsockopt() as an int, so a uint above INT_MAX
+# arrives negative and is rejected with EINVAL well after startup.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    tcp-keepidle: 2147483648
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem
