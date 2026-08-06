@@ -54,6 +54,9 @@ listeners:
       - cacert.pem
       - intcert.pem
     servcert: servcert.pem
+    ## Anything group or other can read, write or execute here draws a warning
+    ## at startup and on every reload, on stderr as well as in the log. It is
+    ## only a warning, so 0600 is a recommendation rather than a requirement.
     servkey: servkey.pem
     ## If the servkey is encrypted:
     #servkeypass: test
