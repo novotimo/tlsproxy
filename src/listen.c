@@ -183,10 +183,10 @@ int bind_listen_sock(listen_t *l, const char *host,
 
         opt = 1;
         if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuseaddr)");
+            err(TPX_WORKER_FATAL, "bind_listen_sock: setsockopt (reuseaddr)");
 
         if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuseport)");
+            err(TPX_WORKER_FATAL, "bind_listen_sock: setsockopt (reuseport)");
 
         // These options are set here and inherited by accepted sockets
         if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) == -1)
@@ -219,7 +219,7 @@ int bind_listen_sock(listen_t *l, const char *host,
         if (lp->ai_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6,
                                                     IPV6_V6ONLY, &opt,
                                                     sizeof(opt)))
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (ipv6)");
+            err(TPX_WORKER_FATAL, "bind_listen_sock: setsockopt (ipv6)");
 
         if (bind(fd, lp->ai_addr, lp->ai_addrlen) < 0) {
             perror("bind_listen_sock: bind");
@@ -231,7 +231,7 @@ int bind_listen_sock(listen_t *l, const char *host,
     }
     if (lp == NULL || fd == -1) {
         freeaddrinfo(listen_addr);
-        errx(77, "Couldn't bind on any addresses");
+        errx(TPX_WORKER_FATAL, "Couldn't bind on any addresses");
     }
 
     memcpy(&l->listen_addr, lp->ai_addr, lp->ai_addrlen);

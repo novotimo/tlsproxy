@@ -398,10 +398,10 @@ void parent_loop(tpx_config_t **config_,
                         while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
                             log_worker(logfd, LL_WARN, TPX_WORKER_DEAD, pid, wstatus);
 
-                            if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 77) {
+                            if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == TPX_WORKER_FATAL) {
                                 for (size_t i=0; i<config->nworkers; ++i)
                                     kill(pids[i], SIGKILL);
-                                exit(77);
+                                exit(TPX_WORKER_FATAL);
                             }
 
                             for (size_t i=0; i<config->nworkers; ++i) {
