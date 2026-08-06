@@ -528,7 +528,7 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
            ((nbytes = DO_READ(proxy->ssl, fd,
                               rdbuf + in_bufq->write_idx,
                               buflen - in_bufq->write_idx)) > 0)) {
-        assert(buflen >= (size_t)nbytes);
+        assert((size_t)nbytes <= buflen - in_bufq->write_idx);
         if (in_bufq->write_idx + (size_t)nbytes == buflen) {
             rdbuf = malloc(TPX_NET_BUFSIZE);
             if (!rdbuf) {
@@ -795,7 +795,7 @@ tpx_err_t proxy_ignore_read(proxy_t *proxy, int is_client) {
     unsigned char rdbuf[TPX_SCRATCH_BUF_SIZE];
 
     // Don't use this in server mode for now.
-    assert(is_client == 1);
+    assert(is_client);
 
     int nbytes = -1;
     int fd = proxy->client_fd;

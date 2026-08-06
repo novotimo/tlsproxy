@@ -420,6 +420,38 @@ static void linebuf_putc_refuses_to_pass_the_line_limit(void **state) {
     assert_int_equal(lb.u.len, TPX_LOG_LINE_MAX);
 }
 
+/* u.len == TPX_LOG_LINE_MAX is a legal state, which the test above is the
+   proof of: putc fills to exactly the limit and only then refuses. So the
+   appends have to accept a line in that state and answer "full", and they have
+   to accept arriving in it themselves. buf is TPX_LOG_LINE_MAX+1 bytes and
+   _write_linebuf() puts the newline in the last one, so nothing here is near
+   the end of the array. */
+static void linebuf_append_accepts_a_line_filled_to_the_limit(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX;
+
+    assert_int_equal(_linebuf_append(&lb, "x", 1, TPX_MODE_NONE), -1);
+    assert_int_equal(_linebuf_append(&lb, "x", 1, TPX_MODE_SANITIZE), -1);
+    assert_int_equal(_linebuf_append_kv(&lb, " k", "v", 1), -1);
+    assert_int_equal(lb.u.len, TPX_LOG_LINE_MAX);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
+/* The other half: an append that succeeds is allowed to land exactly on the
+   limit, since its own guard is `u.len + len > TPX_LOG_LINE_MAX`. A line whose
+   last field ends flush against the ceiling is an ordinary line, and a
+   certificate with a long enough SAN list produces one. */
+static void linebuf_append_may_fill_the_line_exactly(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 4;
+
+    assert_int_equal(_linebuf_append(&lb, "abcd", 4, TPX_MODE_NONE), 0);
+    assert_int_equal(lb.u.len, TPX_LOG_LINE_MAX);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
 static void linebuf_append_reports_a_value_it_had_to_truncate(void **state) {
     (void)state;
     static linebuf_t lb;
@@ -734,6 +766,93 @@ static void write_logs_preserves_the_message_a_failed_write_rolled_back(
     assert_int_equal(write_logs(logpipe[1], logger, queued), queued);
     assert_true(read_logs() > 0);
     assert_contains(logtext, "error_msg=\"survives a failed write\"");
+}
+
+/* The framed length is the one value in the ring that a worker wrote and the
+   master cannot derive for itself, and it sizes the write() that copies the
+   line out. Under LINEBUF_OFFSET it underflows to near UINT32_MAX, and on the
+   wrapping branch that becomes the length of a write() starting at log_buf[0],
+   which runs off the end of the mapping. NDEBUG used to be all that stood in
+   front of that, so the check has to be one the Release build still makes.
+
+   Recovery is to resynchronize onto write_idx, since the framing is what was
+   lost and write_idx is the one boundary still known good, and to claim the
+   events so parent_loop() does not re-arm them and call straight back in. */
+static void write_logs_survives_a_corrupt_framed_length(void **state) {
+    (void)state;
+    log_system_err(LL_ERROR, "never gets out", TPX_ERR_PLAIN);
+    uint64_t queued = take_event_count();
+
+    uint32_t len = 1;
+    memcpy(&logger->log_buf[logger->read_idx], &len, sizeof(len));
+
+    assert_int_equal(write_logs(logpipe[1], logger, queued), queued);
+    assert_int_equal(logger->read_idx, logger->write_idx);
+    assert_true(read_logs() > 0);
+    assert_contains(logtext, "Log ring corrupt");
+
+    // And the ring is usable again rather than stuck on the bad length
+    log_system_err(LL_ERROR, "after the resync", TPX_ERR_PLAIN);
+    assert_int_equal(write_logs(logpipe[1], logger, take_event_count()), 1);
+    assert_true(read_logs() > 0);
+    assert_contains(logtext, "error_msg=\"after the resync\"");
+}
+
+/* The same corrupt length with the cursor near the physical end, which is what
+   it costs when will_wrap is set: once the tail of the buffer has gone out the
+   loop takes the underflowed length as the size of a second write() starting
+   at log_buf[0], and that one runs off the mapping. */
+static void write_logs_survives_a_corrupt_length_at_the_wrap(void **state) {
+    (void)state;
+    logger->read_idx = TPX_LOGBUF_SIZE - 100;
+    logger->write_idx = 40;
+    logger->log_buf[TPX_LOGBUF_SIZE - 101] = '\0';
+    logger->log_buf[39] = '\0';
+
+    uint32_t len = 1;
+    memcpy(&logger->log_buf[logger->read_idx], &len, sizeof(len));
+
+    assert_int_equal(write_logs(logpipe[1], logger, 1), 1);
+    assert_int_equal(logger->read_idx, logger->write_idx);
+    assert_true(read_logs() > 0);
+    assert_contains(logtext, "Log ring corrupt");
+}
+
+/* The terminator is the same property observed from the other end. Without it
+   the cursor advances one byte past a message that did not end there, and
+   every later drain reads a length out of the middle of a line.
+
+   Two messages, and the first one's terminator is the one clobbered: the last
+   byte in the ring is what the entry invariant looks at, so corrupting a
+   single-message ring trips that assert instead and never reaches the drain. */
+static void write_logs_survives_a_missing_terminator(void **state) {
+    (void)state;
+    log_system_err(LL_ERROR, "unterminated", TPX_ERR_PLAIN);
+    log_system_err(LL_ERROR, "behind it", TPX_ERR_PLAIN);
+    uint64_t queued = take_event_count();
+
+    uint32_t framed = 0;
+    memcpy(&framed, &logger->log_buf[logger->read_idx], sizeof(framed));
+    logger->log_buf[(logger->read_idx + framed) % TPX_LOGBUF_SIZE] = 'x';
+
+    assert_int_equal(write_logs(logpipe[1], logger, queued), queued);
+    assert_int_equal(logger->read_idx, logger->write_idx);
+    assert_true(read_logs() > 0);
+    assert_contains(logtext, "Log ring corrupt");
+}
+
+/* parent_loop() drains whatever the eventfd counted, and the count and the
+   ring are maintained by different processes. If the count is ever ahead, the
+   loop body reads a length out of bytes no worker has written; an empty ring
+   is a stop, not a message. */
+static void write_logs_stops_when_the_ring_is_empty(void **state) {
+    (void)state;
+    assert_int_equal(logger->read_idx, logger->write_idx);
+
+    assert_int_equal(write_logs(logpipe[1], logger, 3), 3);
+    assert_int_equal(logger->read_idx, logger->write_idx);
+    assert_int_equal(read_logs(), 0);
+    assert_int_equal(assert_fail_calls, 0);
 }
 
 /* The count write_logs returns is what app/main.c:parent_loop() re-arms the
@@ -1463,6 +1582,8 @@ int main(void) {
         // The line buffer
         T(the_length_prefix_shares_storage_with_the_first_four_bytes),
         T(linebuf_putc_refuses_to_pass_the_line_limit),
+        T(linebuf_append_accepts_a_line_filled_to_the_limit),
+        T(linebuf_append_may_fill_the_line_exactly),
         T(linebuf_append_reports_a_value_it_had_to_truncate),
         T(linebuf_append_stays_inside_the_buffer_in_plain_mode),
         T(base_schema_writes_the_fields_every_line_starts_with),
@@ -1485,6 +1606,10 @@ int main(void) {
         T(write_logs_returns_a_message_whose_header_wrapped),
         T(write_logs_keeps_the_read_index_on_a_message_boundary),
         T(write_logs_preserves_the_message_a_failed_write_rolled_back),
+        T(write_logs_survives_a_corrupt_framed_length),
+        T(write_logs_survives_a_corrupt_length_at_the_wrap),
+        T(write_logs_survives_a_missing_terminator),
+        T(write_logs_stops_when_the_ring_is_empty),
         T(write_logs_reports_how_many_events_it_wrote),
         T(write_logs_reports_nothing_written_when_the_fd_is_bad),
         T(write_logs_does_not_spin_on_a_stale_eintr),

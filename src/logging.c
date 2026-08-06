@@ -49,6 +49,10 @@ shared_t *g_shmem;
 #define DEC_WRAP(IDX) \
     (IDX == 0) ? IDX = TPX_LOGBUF_SIZE - 1 : IDX--
 
+// The byte before IDX, wrapping, so that a cursor sitting at 0 is the same
+// case as any other rather than one the invariants have to skip
+#define RING_PREV(IDX) (((IDX) + TPX_LOGBUF_SIZE - 1) % TPX_LOGBUF_SIZE)
+
 #define GUARD_APPEND(CALL)                                              \
     if (CALL == -1) {                                                   \
         fprintf(stderr, "Error writing log message (%s:%d): buffer is full\n", \
@@ -119,11 +123,14 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         // Invariants
         assert(r_idx < TPX_LOGBUF_SIZE);
         assert(w_idx < TPX_LOGBUF_SIZE);
-        if (r_idx > 0)
-            assert(logger->log_buf[r_idx-1] == '\0');
-        if (w_idx > 0)
-            assert(logger->log_buf[w_idx-1] == '\0');
-        
+        assert(logger->log_buf[RING_PREV(r_idx)] == '\0');
+        assert(logger->log_buf[RING_PREV(w_idx)] == '\0');
+
+        // More events than there are messages. Reading anyway takes a length
+        // out of bytes no worker has written yet.
+        if (r_idx == w_idx)
+            return evt_count;
+
         // This length includes the current byte.
         size_t len_to_end = TPX_LOGBUF_SIZE - r_idx;
         uint32_t linelen = 0;
@@ -142,7 +149,17 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             }
             linelen = u.i;
         }
-        assert(linelen > LINEBUF_OFFSET && linelen <= TPX_LOG_LINE_MAX + 1);
+        // The one value here a worker wrote and the master cannot otherwise
+        // constrain. Unchecked it sizes the write() below, and a length under
+        // LINEBUF_OFFSET underflows into one that runs off the mapping.
+        if (linelen <= LINEBUF_OFFSET || linelen > TPX_LOG_LINE_MAX + 1) {
+            log_system_err_m(logfd, LL_ERROR,
+                             "Log ring corrupt: framed length out of range, "
+                             "dropping the lines queued behind it",
+                             TPX_ERR_PLAIN);
+            logger->read_idx = w_idx;
+            return evt_count;
+        }
         linelen -= LINEBUF_OFFSET;
         len_to_end -= LINEBUF_OFFSET;
 
@@ -153,8 +170,8 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         while (ntowrite > 0 &&
                ((nwritten = write(logfd, &logger->log_buf[r_idx],
                                   ntowrite)) > 0 || errno == EINTR)) {
-            // Invariants
-            assert(errno == EINTR || nwritten >= 0);
+            // Invariant: write() never reports more than it was offered, and
+            // the three counters below are decremented by it
             assert(errno == EINTR || (size_t)nwritten <= ntowrite);
 
             if (errno == EINTR)
@@ -180,9 +197,6 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                     will_wrap = 0;
                 }
             }
-
-            // Invariants
-            assert(nwritten >= 0);
         }
 
         if (nwritten == -1) {
@@ -204,19 +218,23 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             return i;
         }
 
-        // Skip the null byte
-        assert(logger->log_buf[r_idx] == '\0');
+        // Skip the null byte. Its absence means the length disagreed with the
+        // framing, and the next read_idx would land mid-message.
+        if (logger->log_buf[r_idx] != '\0') {
+            log_system_err_m(logfd, LL_ERROR,
+                             "Log ring corrupt: line does not end where its "
+                             "length says, dropping the lines queued behind it",
+                             TPX_ERR_PLAIN);
+            logger->read_idx = w_idx;
+            return evt_count;
+        }
         INC_WRAP(r_idx);
 
         logger->read_idx = r_idx;
-        
-        // Invariants
+
+        // Invariants. Only r_idx moved, so only r_idx is worth restating
         assert(r_idx < TPX_LOGBUF_SIZE);
-        assert(w_idx < TPX_LOGBUF_SIZE);
-        if (r_idx > 0)
-            assert(logger->log_buf[r_idx-1] == '\0');
-        if (w_idx > 0)
-            assert(logger->log_buf[w_idx-1] == '\0');
+        assert(logger->log_buf[RING_PREV(r_idx)] == '\0');
     }
 
     return evt_count;
@@ -710,7 +728,7 @@ int _base_schema(linebuf_t *linebuf, int is_master, loglevel_t level,
 }
 
 int _linebuf_putc(linebuf_t *linebuf, const char c) {
-    if (linebuf->u.len == TPX_LOG_LINE_MAX) return -1;
+    if (linebuf->u.len >= TPX_LOG_LINE_MAX) return -1;
     
     linebuf->u.buf[linebuf->u.len++] = c;
     return 0;
@@ -718,7 +736,7 @@ int _linebuf_putc(linebuf_t *linebuf, const char c) {
 
 int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                     int mode) {
-    assert(linebuf->u.len < TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
 
     int (*transform)(const char, char **, const char*) = NULL;
     if (mode == TPX_MODE_SANITIZE)
@@ -753,7 +771,7 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
         linebuf->u.len += len;
     }
 
-    assert(linebuf->u.len < TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
     return 0;
 }
 
@@ -764,7 +782,7 @@ int _linebuf_append_ossl(linebuf_t *linebuf) {
 
 int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
                        const char *value, size_t value_len) {
-    assert(linebuf->u.len < TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
 
     GUARD_APPEND_(_linebuf_append(linebuf, key, strlen(key), TPX_MODE_NONE));
 
@@ -775,7 +793,7 @@ int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
                       TPX_MODE_SANITIZE));
     GUARD_APPEND_(_linebuf_putc(linebuf, '"'));
 
-    assert(linebuf->u.len < TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
     return 0;
 }
 
@@ -803,6 +821,8 @@ const char *strlevel(loglevel_t level) {
 }
 
 void _write_linebuf_fd(int logfd, linebuf_t *linebuf) {
+    // The one unguarded write into buf, and what its last byte is reserved for
+    assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
     linebuf->u.buf[linebuf->u.len++] = '\n';
 
     if (write(logfd, &linebuf->u.buf[LINEBUF_OFFSET],
@@ -815,6 +835,7 @@ int _linebuf_append_cb(const char *str, size_t len, void *u) {
 }
 
 void _write_linebuf(logger_t *logger, linebuf_t *line) {
+    assert(line->u.len <= TPX_LOG_LINE_MAX);
     line->u.buf[line->u.len++] = '\n';
 
     int ret = pthread_mutex_lock(&logger->write_lock);
