@@ -1,6 +1,8 @@
 #include "config.h"
 
+#include <limits.h>
 #include <stdio.h>
+#include <sys/stat.h>
 
 #include "errors.h"
 
@@ -100,4 +102,32 @@ int tpx_validate_conf(const tpx_config_t *config, int *logfd) {
         if (tpx_validate_conf_l(&config->listeners[i], logfd) == TPX_FAILURE)
             return TPX_FAILURE;
     return TPX_SUCCESS;
+}
+
+
+void check_keyfiles(int logfd, const tpx_config_t *config) {
+    struct stat statbuf;
+    size_t nlisteners = config->listeners_count;
+
+    static const char errmsg_fmt[] = "Keyfile '%s' has permissions that are "
+        "too permissive. Permissions of 0600 are recommended";
+
+    // stat() refuses a pathname of PATH_MAX bytes or more with ENAMETOOLONG,
+    // so a path that gets past it is at most PATH_MAX-1 bytes
+    char errmsg[sizeof(errmsg_fmt) - 2 + PATH_MAX];
+
+    for (size_t i=0; i<nlisteners; ++i) {
+        // We ignore stat errors here, since OpenSSL will give us
+        // errors anyway
+        if (stat(config->listeners[i].servkey, &statbuf) == 0) {
+            if (statbuf.st_mode & (S_IRWXG | S_IRWXO)) {
+                snprintf(errmsg, sizeof(errmsg), errmsg_fmt,
+                         config->listeners[i].servkey);
+
+                log_system_err_m_ex(logfd, LL_WARN,
+                                    "Keyfile permissions wrong", errmsg);
+                fprintf(stderr, "%s\n", errmsg);
+            }
+        }
+    }
 }

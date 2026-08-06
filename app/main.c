@@ -11,6 +11,7 @@
 #include <sys/signalfd.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -193,6 +194,7 @@ void block_signals(sigset_t *mask, int logfd) {
         _fatal(logfd, "sigprocmask failed blocking signals", TPX_ERR_ERRNO);
 }
 
+
 /** @brief Inits OpenSSL and epoll then passes to main loop */
 int main(int argc, char *argv[]) {
     if (argc < TPX_NARGS_MIN || argc > TPX_NARGS_MAX)
@@ -240,6 +242,8 @@ int main(int argc, char *argv[]) {
 
     log_startup(logfd, LL_INFO, argc, argv);
     log_config_load(logfd, LL_INFO, tpx_config);
+
+    check_keyfiles(logfd, tpx_config);
     
     // This can possibly overwrite environ a bit, so let's save it
     char **envp;
@@ -806,6 +810,8 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
     left_to_close = old_workers;
     free(*pids);
     *pids = new_pids;
+
+    check_keyfiles(*logfd, *config);
 
     return 1;
 

@@ -198,4 +198,9 @@ static const cyaml_schema_value_t top_schema = {
 int tpx_validate_conf_l(const tpx_listen_conf_t *config, int *logfd);
 int tpx_validate_conf(const tpx_config_t *config, int *logfd);
 
+/** @brief Gives a warning if a keyfile is group or world readable,
+ *         writable, or executable.
+ */
+void check_keyfiles(int logfd, const tpx_config_t *config);
+
 #endif

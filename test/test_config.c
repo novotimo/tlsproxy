@@ -6,8 +6,10 @@
 #include <setjmp.h>
 #include <cmocka.h>
 
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "errors.h"
@@ -374,6 +376,194 @@ static void keepalive_values_at_the_kernel_maximum_validate(void **state) {
 }
 
 
+/* ------------------------------------------------------------------ *
+ * Key file permissions
+ *
+ * The mode is the entire claim here and git carries only the execute bit, so
+ * these keys are made at run time rather than added to test/configs. The
+ * config goes with them, since it has to name a path that did not exist when
+ * a fixture would have been written.
+ * ------------------------------------------------------------------ */
+
+#define KEYS_MAX 2
+#define KEYPATH_TEMPLATE "/tmp/tpxkeyXXXXXX"
+
+static char keypaths[KEYS_MAX][sizeof(KEYPATH_TEMPLATE)];
+static tpx_listen_conf_t keylisteners[KEYS_MAX];
+static tpx_config_t keyconf;
+
+/** @brief Make a key file at the given mode and hang listener i off it. */
+static void make_key(size_t i, mode_t mode) {
+    memcpy(keypaths[i], KEYPATH_TEMPLATE, sizeof(KEYPATH_TEMPLATE));
+    int fd = mkstemp(keypaths[i]);
+    assert_true(fd >= 0);
+    assert_int_equal(close(fd), 0);
+    // mkstemp() opens at 0600 whatever the umask says, so the mode under
+    // test has to be set afterwards rather than asked for.
+    assert_int_equal(chmod(keypaths[i], mode), 0);
+    keylisteners[i].servkey = keypaths[i];
+}
+
+/** @brief Name a key that is not there, so that stat() fails. */
+static void make_missing_key(size_t i) {
+    make_key(i, 0600);
+    assert_int_equal(unlink(keypaths[i]), 0);
+}
+
+static int reset_keys(void **state) {
+    reset_logger(state);
+    memset(keypaths, 0, sizeof(keypaths));
+    memset(keylisteners, 0, sizeof(keylisteners));
+    keyconf.listeners = keylisteners;
+    keyconf.listeners_count = 1;
+    return 0;
+}
+
+static int remove_keys(void **state) {
+    (void)state;
+    for (size_t i=0; i<KEYS_MAX; ++i)
+        if (keypaths[i][0])
+            unlink(keypaths[i]);
+    return 0;
+}
+
+static void a_group_readable_key_is_reported_in_the_log(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_key(0, 0640);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_non_null(strstr(log, "error_msg=\"Keyfile permissions wrong\""));
+    assert_non_null(strstr(log, keypaths[0]));
+}
+
+static void a_key_readable_only_by_its_owner_is_not_reported(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_key(0, 0600);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_string_equal(log, "");
+    assert_string_equal(err, "");
+}
+
+/* The two below are separate masks in the same condition, so a typo in
+ * either one is invisible to a test that only ever sets the read bits. */
+static void a_key_with_only_the_group_execute_bit_is_reported(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_key(0, 0610);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_non_null(strstr(log, keypaths[0]));
+}
+
+static void a_world_writable_key_is_reported(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_key(0, 0602);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_non_null(strstr(log, keypaths[0]));
+}
+
+static void the_warning_reaches_stderr_as_well_as_the_log(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_key(0, 0644);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_non_null(strstr(err, keypaths[0]));
+    assert_non_null(strstr(err, "0600"));
+    assert_non_null(strstr(log, keypaths[0]));
+}
+
+/* A master with no logfile has logfd -1 and a logger that never got enabled,
+ * which is the configuration where a bad mode is least likely to be noticed
+ * by any other means. */
+static void the_warning_still_reaches_stderr_when_the_log_is_off(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    g_shmem->logger.enabled = 0;
+    make_key(0, 0644);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(-1, &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_string_equal(log, "");
+    assert_non_null(strstr(err, keypaths[0]));
+}
+
+static void a_bad_key_on_a_later_listener_is_reported_too(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_key(0, 0600);
+    make_key(1, 0644);
+    keyconf.listeners_count = 2;
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_non_null(strstr(log, keypaths[1]));
+}
+
+/* Whatever is wrong with a key we cannot stat, OpenSSL reports it later with
+ * more to say about it than we would have. */
+static void a_key_that_stat_cannot_see_is_passed_over(void **state) {
+    (void)state;
+    char err[CAPBUF], log[CAPBUF];
+
+    make_missing_key(0);
+
+    capture_log();
+    capture_stderr();
+    check_keyfiles(log_pipe[1], &keyconf);
+    release_stderr(err, sizeof(err));
+    release_log(log, sizeof(log));
+
+    assert_string_equal(log, "");
+    assert_string_equal(err, "");
+}
+
+
 int main(void) {
     g_shmem = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE,
                    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -438,6 +628,30 @@ int main(void) {
         cmocka_unit_test_setup(empty_scalars_validate, reset_logger),
         cmocka_unit_test_setup(keepalive_values_at_the_kernel_maximum_validate,
                                reset_logger),
+
+        cmocka_unit_test_setup_teardown(
+            a_group_readable_key_is_reported_in_the_log,
+            reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            a_key_readable_only_by_its_owner_is_not_reported,
+            reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            a_key_with_only_the_group_execute_bit_is_reported,
+            reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            a_world_writable_key_is_reported, reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            the_warning_reaches_stderr_as_well_as_the_log,
+            reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            the_warning_still_reaches_stderr_when_the_log_is_off,
+            reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            a_bad_key_on_a_later_listener_is_reported_too,
+            reset_keys, remove_keys),
+        cmocka_unit_test_setup_teardown(
+            a_key_that_stat_cannot_see_is_passed_over,
+            reset_keys, remove_keys),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
