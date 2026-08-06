@@ -46,6 +46,10 @@ static void connect_conf(const tpx_listen_conf_t *config,
                                    : TPX_DEFAULT_CONNECT_TIMEOUT;
 }
 
+static int gai_exit_code(int gai_err) {
+    return gai_err == EAI_AGAIN ? EXIT_FAILURE : TPX_WORKER_FATAL;
+}
+
 tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     assert(listen->event_id == EV_LISTEN);
     
@@ -136,7 +140,7 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
                                  keepidle, keepintvl, keepcnt);
     
     if (listen(lsock, SOMAXCONN) < 0)
-        err(EXIT_FAILURE, "create_listener: listen");
+        err(TPX_WORKER_FATAL, "create_listener: listen");
 
     l->event_id = EV_LISTEN;
     l->fd = lsock;
@@ -148,7 +152,11 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
     if (ret == TPX_FAILURE) {
         close(lsock);
         free(l);
-        errx(EXIT_FAILURE, "create_listener: Couldn't make listener");
+        errx(TPX_WORKER_FATAL, "create_listener: Couldn't make listener (fatal)");
+    } else if (ret == TPX_AGAIN) {
+        close(lsock);
+        free(l);
+        errx(EXIT_FAILURE, "create_listener: Couldn't make listener (temporary)");
     }
 
     return l;
@@ -169,7 +177,8 @@ int bind_listen_sock(listen_t *l, const char *host,
     struct addrinfo *listen_addr, *lp;
     int gai_err = getaddrinfo(host, service, &hints, &listen_addr);
     if (gai_err != 0)
-        errx(EXIT_FAILURE, "bind_listen_sock: getaddrinfo (%s:%d): %s",
+        errx(gai_exit_code(gai_err),
+             "bind_listen_sock: getaddrinfo (%s:%d): %s",
              host, port, gai_strerror(gai_err));
 
     int fd = -1;
@@ -256,7 +265,7 @@ tpx_err_t get_conn(const char *host, const unsigned short port,
     if (error != 0) {
         fprintf(stderr, "getaddrinfo for listener (%s:%hu) failed: %s\n",
                 host, port, gai_strerror(error));
-        return TPX_FAILURE;
+        return error == EAI_AGAIN ? TPX_AGAIN : TPX_FAILURE;
     }
 
     memcpy(addr, connect_addr->ai_addr, connect_addr->ai_addrlen);
