@@ -113,6 +113,31 @@ int __wrap_fcntl(int fd, int op, ...) {
 static void *malloc_override;
 static int malloc_fails_next;
 
+/* Failure injection by allocation size, since proxy_handle_read() allocates
+   twice per chunk and a test needs to name which of the two it is failing: the
+   chunk is TPX_NET_BUFSIZE and the queue element enqueue() adds is
+   sizeof(bufq_elem_t). Counting every malloc the binary makes instead would
+   pin the test to cmocka's internals. malloc_fail_skip lets the first n of
+   that size through, which is how the rotation in the middle of the read loop
+   is reached. */
+static size_t malloc_fail_size;
+static unsigned int malloc_fail_skip;
+
+/* enqueue() takes ownership of the buffer on success and not on failure, so
+   the failure path has to free the chunk itself. Watching the one pointer
+   rather than logging every free keeps cmocka's own out of it, and a leak is
+   otherwise visible only under ASAN in CI. */
+static void *last_chunk;
+static int last_chunk_freed;
+
+void __real_free(void *ptr);
+void __wrap_free(void *ptr);
+void __wrap_free(void *ptr) {
+    if (ptr && ptr == last_chunk)
+        last_chunk_freed = 1;
+    __real_free(ptr);
+}
+
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size);
 void *__wrap_malloc(size_t size) {
@@ -120,12 +145,22 @@ void *__wrap_malloc(size_t size) {
         malloc_fails_next = 0;
         return NULL;
     }
+    if (malloc_fail_size && size == malloc_fail_size) {
+        if (malloc_fail_skip == 0) {
+            malloc_fail_size = 0;
+            return NULL;
+        }
+        malloc_fail_skip--;
+    }
     if (malloc_override) {
         void *p = malloc_override;
         malloc_override = NULL;
         return p;
     }
-    return __real_malloc(size);
+    void *p = __real_malloc(size);
+    if (size == TPX_NET_BUFSIZE)
+        last_chunk = p;
+    return p;
 }
 
 
@@ -336,6 +371,10 @@ static int reset_recorders(void **state) {
     last_assertion = NULL;
     malloc_override = NULL;
     malloc_fails_next = 0;
+    malloc_fail_size = 0;
+    malloc_fail_skip = 0;
+    last_chunk = NULL;
+    last_chunk_freed = 0;
     return 0;
 }
 
@@ -1105,23 +1144,152 @@ static void server_eof_still_flushes_what_it_just_read(void **state) {
 }
 
 
+/* A read that exactly fills a chunk rotates onto a fresh one and leaves that
+   one queued and unwritten, so "the queue holds no chunks" and "the last chunk
+   holds no bytes" are different states even though both have write_idx == 0.
+   Only the first may allocate. Reading the second as the first appends a chunk
+   behind one that was never written into, and the write path takes every chunk
+   but the last for full, so the peer gets TPX_NET_BUFSIZE bytes of whatever
+   the allocator handed back in front of the data. That is the distinction the
+   old -1 sentinel carried and the empty flag carries now.
+
+   Asserted on what reached the peer rather than on write_idx, since the index
+   is a symptom and the bytes are the defect. */
+static void read_fills_the_chunk_a_rotation_left_behind(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->serv_fd = 11;
+    p->hand_shaken = 1;
+
+    /* Exactly one chunk, then EAGAIN. Value/errno pairs, since WRAP_FUN_ERR
+       consumes an errno after every return value, and an unarmed read would
+       go to whatever fd 11 happens to be. */
+    will_return(__wrap_read, TPX_NET_BUFSIZE);
+    will_return(__wrap_read, 0);
+    will_return(__wrap_read, -1);
+    will_return(__wrap_read, EAGAIN);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_SUCCESS);
+
+    // The rotation happened, and the full chunk went out on its own.
+    assert_int_equal(ssl_write_log.calls, 1);
+    assert_int_equal(ssl_write_log.nbytes[0], TPX_NET_BUFSIZE);
+
+    // These five bytes belong in the chunk the rotation left behind.
+    will_return(__wrap_read, 5);
+    will_return(__wrap_read, 0);
+    will_return(__wrap_read, -1);
+    will_return(__wrap_read, EAGAIN);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_SUCCESS);
+
+    assert_int_equal(ssl_write_log.calls, 2);
+    assert_int_equal(ssl_write_log.nbytes[1], 5);
+
+    free_proxy(p);
+}
+
+
+/* Both allocations behind a chunk can fail, and the queue has to come out of
+   either one untouched: nothing half-added, and no buffer stranded. enqueue()
+   takes ownership only when it succeeds, which is what makes the free on the
+   failure path correct rather than a double free.
+
+   fd is -1 rather than a made-up number, since nothing should reach the read
+   at all and an unarmed __wrap_read forwards to the real one. EBADF is a
+   deterministic answer to that; a live descriptor at some hardcoded number is
+   not. */
+static void read_reports_a_failed_chunk_allocation(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->hand_shaken = 1;
+
+    malloc_fails_next = 1;
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+    assert_true(queue_empty(p->s2c));
+
+    free_proxy(p);
+}
+
+static void read_frees_the_chunk_when_enqueue_fails(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->hand_shaken = 1;
+
+    // The chunk goes through, the element enqueue() adds for it does not
+    malloc_fail_size = sizeof(bufq_elem_t);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+
+    assert_true(queue_empty(p->s2c));
+    assert_non_null(last_chunk);
+    assert_true(last_chunk_freed);
+
+    free_proxy(p);
+}
+
+/* The same two failures at the rotation in the middle of the read loop, where
+   there is already a chunk on the queue and it has just been filled exactly.
+   The chunk that is there stays there and keeps its data; what is lost is the
+   read that would have followed. Every caller of proxy_handle_read() closes on
+   TPX_FAILURE, so the bytes already read into the full chunk go out on the
+   client side flush in PS_CLIENT_DISCONNECTED and are dropped with the proxy
+   on the server side, which is what the other failure returns here do too. */
+static void read_reports_a_failed_rotation(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->serv_fd = 11;
+    p->hand_shaken = 1;
+
+    // Let the first chunk through and fail the one the rotation asks for
+    malloc_fail_size = TPX_NET_BUFSIZE;
+    malloc_fail_skip = 1;
+
+    will_return(__wrap_read, TPX_NET_BUFSIZE);
+    will_return(__wrap_read, 0);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+
+    assert_false(queue_empty(p->s2c));
+    assert_ptr_equal(p->s2c->first, p->s2c->last);
+    assert_false(last_chunk_freed);
+
+    free_proxy(p);
+}
+
+static void read_frees_the_chunk_when_the_rotation_enqueue_fails(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->serv_fd = 11;
+    p->hand_shaken = 1;
+
+    // The first element goes through, the one for the rotated chunk does not
+    malloc_fail_size = sizeof(bufq_elem_t);
+    malloc_fail_skip = 1;
+
+    will_return(__wrap_read, TPX_NET_BUFSIZE);
+    will_return(__wrap_read, 0);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+
+    assert_ptr_equal(p->s2c->first, p->s2c->last);
+    assert_true(last_chunk_freed);
+
+    free_proxy(p);
+}
+
+
 /* ------------------------------------------------------------------ */
 /* proxy_handle_write()                                                */
 /* ------------------------------------------------------------------ */
 
 /* proxy_handle_read() rotates to a fresh chunk the instant a read exactly
    fills the current one, and sets write_idx = 0 as it does. It then calls
-   proxy_process_data(), which calls proxy_handle_write() on that same queue -
-   which opens with assert(out_bufq->write_idx > 0) and a comment claiming the
-   condition holds because write always follows read. It is read that breaks
-   it, and a peer sending exactly TPX_NET_BUFSIZE bytes is all it takes.
+   proxy_process_data(), which calls proxy_handle_write() on that same queue,
+   so a last chunk with nothing in it is an ordinary state on the write path
+   and a peer sending exactly TPX_NET_BUFSIZE bytes produces it.
 
-   Scope, because the two builds diverge here: the Dockerfile builds Release,
-   which defines NDEBUG, so the shipped image drops the assertion - and the
-   code underneath is actually correct, peeking the fresh chunk, computing
-   real_buflen = 0 and returning TPX_SUCCESS. So this is a remotely triggerable
-   abort in assertion-enabled builds only, not a hole in the shipped one. The
-   assertion is the thing that is wrong, not the code it guards. */
+   This pins the repair of an entry assert that used to read write_idx > 0,
+   with a comment claiming the condition held because write always follows
+   read. It is read that broke it. The assert was relaxed to >= 0, and unsigned
+   indices made even that vacuous, so it is gone; what is pinned now is the
+   code it guarded, which drains the full chunk, peeks the fresh one, computes
+   real_buflen = 0 and returns without sending. */
 static void write_accepts_a_freshly_rotated_chunk(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_READY);
@@ -1135,28 +1303,31 @@ static void write_accepts_a_freshly_rotated_chunk(void **state) {
     p->c2s->read_idx = 0;
     p->c2s->write_idx = 0;  // rotation just happened, nothing in the new chunk
 
-    (void)proxy_handle_write(p, 0);
+    /* Armed rather than left to the wrapper's fallthrough: this is the server
+       side, so an unarmed send() is a real sendto() on whatever fd 11 is, and
+       under a shell that leaks a socket there the full chunk goes down it. */
+    will_return(__wrap_send, TPX_NET_BUFSIZE);
+    will_return(__wrap_send, 0);
+
+    assert_int_equal(proxy_handle_write(p, 0), TPX_SUCCESS);
     assert_int_equal(assert_fail_calls, 0);
 
     free_proxy(p);
 }
 
-/* queue_peek() has three outcomes and proxy_handle_write() branches on two:
-   TPX_FAILURE, and `case TPX_SUCCESS: default:` - which quietly folds TPX_EMPTY
-   into the success path. wbuf is then whatever it held before, so the first
-   iteration asserts on NULL and any later iteration walks the pointer the
-   previous iteration just free()d. proxy_handle_read() gets this right for
-   queue_peek_last() a hundred lines earlier, listing TPX_EMPTY as its own
-   corruption case, so the two callers of the same three-valued API disagree.
+/* queue_peek() has three outcomes, and proxy_handle_write() used to branch on
+   two: TPX_FAILURE, and `case TPX_SUCCESS: default:`, which folded TPX_EMPTY
+   into the success path. wbuf was then whatever it held before, so the first
+   iteration asserted on NULL and any later one walked the pointer the previous
+   iteration had just free()d. TPX_EMPTY is its own corruption case now, the
+   way proxy_handle_read() has always treated it for queue_peek_last().
 
-   Not currently reachable: outbuf_empty() rejects an already-empty queue on
-   the way in, and the only dequeue in the loop runs when first != last, so it
-   always leaves an element behind. This is forced with a mock rather than
-   through the front door, and it is a latent gap, not a live bug - it holds
-   today by the arithmetic of two invariants three functions apart, and stops
-   holding the moment either moves. Same shape as the dispatch bug: an enum
-   with more values than its switch admits to, where the leftovers land on the
-   branch that assumes success. */
+   Never reachable through the front door: outbuf_empty() rejects an
+   already-empty queue on the way in, and the only dequeue in the loop runs
+   when first != last, so it always leaves an element behind. Forced with a
+   mock for that reason. What it pins is that the third outcome of a
+   three-valued API is still handled once the arithmetic holding it off, two
+   invariants three functions apart, stops holding. */
 static void write_treats_empty_peek_as_corruption(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_READY);
@@ -1393,6 +1564,17 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(server_eof_still_flushes_what_it_just_read,
                                reset_recorders),
+        cmocka_unit_test_setup(read_fills_the_chunk_a_rotation_left_behind,
+                               reset_recorders),
+        cmocka_unit_test_setup(read_reports_a_failed_chunk_allocation,
+                               reset_recorders),
+        cmocka_unit_test_setup(read_frees_the_chunk_when_enqueue_fails,
+                               reset_recorders),
+        cmocka_unit_test_setup(read_reports_a_failed_rotation,
+                               reset_recorders),
+        cmocka_unit_test_setup(
+            read_frees_the_chunk_when_the_rotation_enqueue_fails,
+            reset_recorders),
 
         cmocka_unit_test_setup(write_accepts_a_freshly_rotated_chunk,
                                reset_recorders),

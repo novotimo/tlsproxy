@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "errors.h"
+#include "logging.h"
 
 
 
@@ -15,7 +16,8 @@ tpx_err_t enqueue(bufq_t *queue, unsigned char *buf, size_t buflen) {
     
     bufq_elem_t *elem = malloc(sizeof(bufq_elem_t));
     if (!elem) {
-        perror("enqueue: malloc");
+        log_system_err(LL_ERROR, "Couldn't allocate memory for buffer queue"
+                       " element", TPX_ERR_ERRNO);
         return TPX_FAILURE;
     }
     elem->next = NULL;
@@ -24,7 +26,7 @@ tpx_err_t enqueue(bufq_t *queue, unsigned char *buf, size_t buflen) {
 
     if (!queue->first && !queue->last) {
         queue->first = queue->last = elem;
-        queue->write_idx = 0;
+        queue->write_idx = queue->read_idx = 0;
     } else {
         queue->last->next = elem;
         queue->last = elem;
@@ -44,7 +46,7 @@ tpx_err_t dequeue(bufq_t *queue, unsigned char **buf, size_t *buflen) {
     queue->first = elem->next;
     if (!queue->first) {
         queue->last = NULL;
-        queue->write_idx = -1;
+        queue->write_idx = 0;
     }
     
     if (buf)
@@ -94,16 +96,18 @@ int queue_empty(bufq_t *queue) {
 
 tpx_err_t check_consistency(bufq_t *queue) {
     if (!queue) {
-        fprintf(stderr, "Queue is NULL\n");
+        log_system_err(LL_ERROR, "Queue is NULL", TPX_ERR_PLAIN);
         return TPX_FAILURE;
     }
     if (queue->first && !queue->last) {
-        fprintf(stderr,
-                "Queue corrupt: NULL last element on non-empty queue\n");
+        log_system_err(LL_ERROR,
+                       "Queue corrupt: NULL last element on non-empty queue",
+                       TPX_ERR_PLAIN);
         return TPX_FAILURE;
     } else if (!queue->first && queue->last) {
-        fprintf(stderr,
-                "Queue corrupt: NULL first element on non-empty queue\n");
+        log_system_err(LL_ERROR,
+                       "Queue corrupt: NULL first element on non-empty queue",
+                       TPX_ERR_PLAIN);
         return TPX_FAILURE;
     };
     return TPX_SUCCESS;
@@ -112,10 +116,11 @@ tpx_err_t check_consistency(bufq_t *queue) {
 bufq_t *queue_new(void) {
     bufq_t *q = calloc(1, sizeof(bufq_t));
     if (!q) {
-        perror("queue_new: calloc");
+        log_system_err(LL_ERROR,
+                       "Couldn't allocate memory for new buffer queue",
+                       TPX_ERR_ERRNO);
         return NULL;
     }
-    q->write_idx = -1;
     return q;
 }
 

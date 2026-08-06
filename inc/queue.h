@@ -17,8 +17,8 @@ typedef struct bufq_elem_s {
 typedef struct bufq_s {
     bufq_elem_t *first; /**< @brief The first queue element */
     bufq_elem_t *last; /**< @brief The last queue element */
-    int read_idx; /**< @brief The read index within the first element */
-    int write_idx; /**< @brief The write index within the last element */
+    size_t read_idx; /**< @brief The read index within the first element */
+    size_t write_idx; /**< @brief The write index within the last element */
 } bufq_t;
 
 

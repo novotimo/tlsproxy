@@ -1,6 +1,7 @@
 #ifndef __TLSPROXY_PROXY_H
 #define __TLSPROXY_PROXY_H
 
+#include <limits.h>
 #include <openssl/ssl.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -11,6 +12,8 @@
 
 
 #define TPX_NET_BUFSIZE 16384 /**< @brief The buffer chunk size in the bufq */
+_Static_assert(TPX_NET_BUFSIZE < INT_MAX, "TPX_NET_BUFSIZE must fit into an "
+               "int without truncation as it's used with SSL_{write,read}");
 
 #define DO_READ(ssl, fd, buf, bufsize) \
     is_client ? SSL_read(ssl,buf,bufsize) : read(fd,buf,bufsize)
