@@ -11,14 +11,20 @@ listeners:
     target-ip: 127.0.0.1
     target-port: 8080
 
-    ## If we can't connect to the server by this time, drop the connection
-    connect-timeout: 5000
+    ## If we can't connect to the server by this time, drop the connection.
+    ## Optional, in seconds, and a 0 is read as absent; leaving it out takes
+    ## 60 seconds, which is what nginx's proxy_connect_timeout does.
+    connect-timeout: 5
 
     ## TCP keepalive configuration, set on both the client and the backend
     ## leg. There's no idle timeout yet, so this is what bounds a peer that
     ## dies without sending a FIN. All three are optional and the values below
     ## are the defaults. A 0 is read as absent and takes the default too, since
     ## setsockopt() rejects 0 for all three of these.
+    ## The kernel caps these well below what the field can hold: keepidle and
+    ## keepintvl at 32767 seconds and keepcnt at 127 probes. Anything above
+    ## that is refused at startup, since setsockopt() would return EINVAL for
+    ## it in the worker, where there is nobody left to tell.
     ## keepidle: the seconds before we need to send a keepalive
     tcp-keepidle: 60
     ## keepintvl: the interval between keepalives sent
@@ -57,7 +63,7 @@ listeners:
   #   target-ip: 127.0.0.1
   #   target-port: 8081
 
-  #   connect-timeout: 6000
+  #   connect-timeout: 6
 
   #   ## Note we're using the same IP/port combo for the listen socket
   #   ## That's right, we get basic load balancing too!
@@ -73,7 +79,7 @@ listeners:
   #   target-ip: 127.0.0.1
   #   target-port: 23
 
-  #   connect-timeout: 2000
+  #   connect-timeout: 2
 
   #   listen-ip: 0.0.0.0
   #   listen-port: 42023

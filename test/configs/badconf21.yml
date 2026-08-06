@@ -1,0 +1,15 @@
+# listen-port 0 parses, and bind() reads it as a request for whatever
+# ephemeral port the kernel has spare, so the listener comes up on an address
+# nothing was told to connect to.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    listen-ip: 0.0.0.0
+    listen-port: 0
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

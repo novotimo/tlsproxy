@@ -1,0 +1,16 @@
+# As badconf18, for the probe count, where the kernel's bound is 127 and so
+# much lower again.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    tcp-keepcnt: 128
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

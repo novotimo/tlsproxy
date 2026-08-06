@@ -33,9 +33,10 @@ In more detail:
   `cap_drop: ALL` with nothing added back, along with `read_only: true`,
   `no-new-privileges`, a pids limit, a memory limit and an explicit nofile
   ulimit.
-- **Configuration reload with a dry run.** A config file that doesn't parse, or
-  a certificate that doesn't load, leaves the running configuration alone. See
-  "Configuration reload" below for how that works.
+- **Configuration reload with a dry run.** A config file that doesn't parse,
+  doesn't pass the same validation startup applies, or names a certificate that
+  doesn't load, leaves the running configuration alone. See "Configuration
+  reload" below for how that works.
 - **Logs meant for a log analysis system.** Every line is key-value (logfmt),
   every event has a type, and anything a client can influence is escaped before
   it goes in, so nobody gets to inject a log record by putting a newline into a
@@ -112,8 +113,9 @@ ciphersuite and the outcome, which is one of granted, denied or failed.
 
 ### Configuration reload
 
-On SIGHUP the master parses the new config file, and then builds a complete
-`SSL_CTX` for every listener in it, loading every certificate and key. We don't
+On SIGHUP the master parses the new config file, runs it through the same
+validation startup uses, and then builds a complete `SSL_CTX` for every listener
+in it, loading every certificate and key. We don't
 use those contexts for anything; we build them only to prove that they can be
 built, and then free them. Only once all of that has succeeded does the master
 swap in the new configuration and cycle the workers. Point `servcert:` at a file
@@ -235,10 +237,16 @@ that it can drop to its own user.
 One YAML file. `example/default.yml` is commented throughout and doubles as the
 reference: worker count, log file and level, and then a list of listeners, each
 with a backend, a listen address, a certificate chain, a connect timeout, TCP
-keepalive settings and the shutdown deadlines above. The keepalive and shutdown
-keys are optional, and an absent one takes the default the example gives.
-`connect-timeout` is optional to the parser but not to the program, since
-leaving it out is read as zero; that's one of the validation gaps below.
+keepalive settings and the shutdown deadlines above. The keepalive, shutdown
+and connect timeout keys are all optional, and an absent one takes its default,
+which the example names in the comment beside it. Every timeout in there is in
+seconds.
+
+What the schema can't express is checked after parsing, so a port outside 1 to
+65535, an `nworkers` of zero or above 128, a `tcp-keep*` value above what the
+kernel will accept, and a `cert-chain` given together with `cacerts` are all
+refused with the name of the listener they came from. The same checks run on
+reload, where they go to the log instead of stderr.
 
 Run it as `./tlsproxy <config.yml>`, or with no argument at all, in which case
 it reads `/etc/tlsproxy/tlsproxy.yml`. That's what the Docker image does.
@@ -339,8 +347,8 @@ covers what changed since 1.0.0, which was mostly repair work.
 2. Handshake and idle timeouts, and an optional cap on connection lifetime.
 3. File descriptor exhaustion: raise `RLIMIT_NOFILE`, handle `EMFILE` without
    spinning, add `max-connections`, and then measure the real ceiling.
-4. Configuration validation for the cases that currently fail confusingly:
-   `nworkers: 0`, a missing `connect-timeout`, a world-readable private key.
+4. A warning at startup when the private key file is group- or world-readable,
+   which is the last of the configuration checks in #46 still outstanding.
 5. The benchmark rebuild described above.
 6. A security model section in `doc/ARCHITECTURE.md` covering the trust
    boundary, what enforces each part of it, and what's deliberately out of

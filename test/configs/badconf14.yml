@@ -1,0 +1,16 @@
+# One above TPX_WORKERS_MAX. The field is a uint, so anything up to 2^32-1
+# parses, and without the cap the fork loop in main() runs that many times.
+
+nworkers: 129
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    connect-timeout: 5
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

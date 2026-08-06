@@ -1,0 +1,15 @@
+# target-port 0 parses, and connect() to port 0 fails with ECONNREFUSED on
+# Linux rather than doing anything useful, so the rejection has to come from
+# tpx_validate_conf_l.
+
+nworkers: 1
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 0
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

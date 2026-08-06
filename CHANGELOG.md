@@ -93,6 +93,45 @@ Teardown is now a state machine, working through `PS_SERVER_DISCONNECTED`,
 - `X509_NAME_oneline()` allocates, and the certificate logging paths now free
   what it returns.
 
+## Configuration validation (#46)
+
+- `nworkers` is checked rather than taken on trust. Zero gave a master with no
+  workers, which parses cleanly and then proxies nothing, and since the field is
+  a uint anything up to 2^32-1 parsed and went straight into the fork loop. It
+  is rejected below 1 and above 128 now.
+- `connect-timeout` defaults to 60 seconds, following nginx's
+  `proxy_connect_timeout`. It is optional to the schema, so leaving it out read
+  as zero, and a deadline of `gettime() + 0` has already passed by the next turn
+  of the event loop, which dropped every backend connection that didn't complete
+  immediately. It was also the one per-listener timeout measured in
+  milliseconds, while `shutdown-timeout` and `shutdown-interval` were in
+  seconds, so it is seconds throughout now and the example configs lost three
+  zeroes.
+- Both ports have to be between 1 and 65535. Zero parses either way, and it
+  fails differently on each side: `connect()` to port 0 returns ECONNREFUSED on
+  Linux, so a `target-port` of 0 brought the listener up and then refused every
+  connection for a reason the error didn't name, while `bind()` reads a
+  `listen-port` of 0 as a request for whatever ephemeral port is spare, which
+  puts the listener somewhere nothing was told to connect to.
+- The three `tcp-keep*` values are bounded by what the kernel takes, 32767 for
+  `tcp-keepidle` and `tcp-keepintvl` and 127 for `tcp-keepcnt`, rather than by
+  `INT_MAX`. Everything between the two used to validate cleanly and then fail
+  `setsockopt()` with EINVAL in `bind_listen_sock()`, which runs in the worker
+  after the master has forked, so it was reported to nobody and killed the
+  worker. All four keepalive `setsockopt()` calls on the listening socket are
+  warnings now, `SO_KEEPALIVE` along with the three `TCP_KEEP*` ones, since a
+  listener with degraded keepalive still serves traffic and a worker that exits
+  does not, and a value that would provoke a refusal no longer gets past
+  startup anyway.
+- Reload validates the new configuration with the same code as startup.
+  `handle_reload()` carried a hand-copied subset of the listener checks under a
+  comment asking that the two be kept in step, and they had already drifted,
+  since the copy checked neither `nworkers` nor the `tcp-keep*` bounds and so
+  accepted configurations startup would have refused. `tpx_validate_conf()`
+  takes a log descriptor to decide where its complaints go, the master's log on
+  reload and stderr at startup, so there is one set of rules with two
+  destinations.
+
 ## Configuration reload (#26)
 
 - A failed reload no longer terminates the proxy.

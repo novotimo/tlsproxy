@@ -13,17 +13,29 @@
 #define TPX_DEFAULT_TCP_KEEPIDLE      60
 #define TPX_DEFAULT_TCP_KEEPINTVL     10
 #define TPX_DEFAULT_TCP_KEEPCNT       3
+
+// These are the maximum values usable according to include/net/tcp.h
+// in the Linux kernel source
+#define TPX_MAX_TCP_KEEPIDLE      32767
+#define TPX_MAX_TCP_KEEPINTVL     32767
+#define TPX_MAX_TCP_KEEPCNT       127
+
 /* Shutdown should take at most 30 seconds, and if we don't get any messages
  * within 5 seconds, we should send our FIN and leave */
 #define TPX_DEFAULT_SHUTDOWN_TIMEOUT  30
 #define TPX_DEFAULT_SHUTDOWN_INTERVAL 5
 
+// Copies nginx's proxy_connect_timeout, maximum is 127 as the Linux
+// kernel gives up after that long anyway
+#define TPX_DEFAULT_CONNECT_TIMEOUT 60
+
 typedef struct tpx_listen_conf_s {
     const char *name; /**< @brief The name of the listener */
     const char *target_ip; /**< @brief The IP address of the upstream server. */
     unsigned int target_port; /**< @brief The port of the upstream service. */
-    unsigned int connect_timeout; /**< @brief The timeout for connecting to
-                                   * the backend in milliseconds */
+    unsigned int connect_timeout; /**< @brief Seconds to wait for the backend
+                                   * connection to complete. 0 means use
+                                   * TPX_DEFAULT_CONNECT_TIMEOUT */
     unsigned int tcp_keepidle; /**< @brief Seconds a connection may sit idle
                                 * before the first keepalive probe. 0 means
                                 * use TPX_DEFAULT_TCP_KEEPIDLE */
@@ -171,13 +183,24 @@ static const cyaml_schema_value_t top_schema = {
         CYAML_FLAG_POINTER, tpx_config_t, top_mapping_schema),
 };
 
-/** Validate the configuration file, checking that cacerts and cert-chain
- * aren't both configured together.
+/** Validate the configuration file, checking the rules the cyaml schema can't
+ * express, such as cacerts and cert-chain not being configured together.
+ *
+ * Both take the same two destinations, since the master has a log to write to
+ * on reload and nothing but stderr at startup.
  *
  * @param config The configuration object
+ * @param logfd Where complaints go: the master's log descriptor, or NULL for
+ *              stderr. Not the fd itself, so that a master logging to
+ *              descriptor 0 is still distinguishable from one with no log.
  * @return Returns TPX_FAILURE on failure and TPX_SUCCESS on success.
  */
-int tpx_validate_conf_l(const tpx_listen_conf_t *config);
-int tpx_validate_conf(const tpx_config_t *config);
+int tpx_validate_conf_l(const tpx_listen_conf_t *config, int *logfd);
+int tpx_validate_conf(const tpx_config_t *config, int *logfd);
+
+/** @brief Gives a warning if a keyfile is group or world readable,
+ *         writable, or executable.
+ */
+void check_keyfiles(int logfd, const tpx_config_t *config);
 
 #endif

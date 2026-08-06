@@ -1,0 +1,16 @@
+# A master with no workers parses cleanly and then proxies nothing, so the
+# rejection has to come from tpx_validate_conf rather than the schema.
+
+nworkers: 0
+listeners:
+  - name: https
+    target-ip: 127.0.0.1
+    target-port: 8080
+
+    connect-timeout: 5
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: chain.pem
+    servkey: servkey.pem

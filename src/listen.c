@@ -39,6 +39,17 @@ static void shutdown_conf(const tpx_listen_conf_t *config,
                                    : TPX_DEFAULT_SHUTDOWN_INTERVAL;
 }
 
+// Make sure we fallback to defaults
+static void connect_conf(const tpx_listen_conf_t *config,
+                         uint64_t *timeout) {
+    *timeout = config->connect_timeout  ? (uint64_t)config->connect_timeout
+                                   : TPX_DEFAULT_CONNECT_TIMEOUT;
+}
+
+static int gai_exit_code(int gai_err) {
+    return gai_err == EAI_AGAIN ? EXIT_FAILURE : TPX_WORKER_FATAL;
+}
+
 tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     assert(listen->event_id == EV_LISTEN);
     
@@ -89,8 +100,11 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     uint64_t shutdown_timeout, shutdown_interval;
     shutdown_conf(listen->config, &shutdown_timeout, &shutdown_interval);
 
+    uint64_t connect_timeout;
+    connect_conf(listen->config, &connect_timeout);
+
     proxy_t *proxy = create_proxy(conn_sock, ssl,
-                                  listen, listen->config->connect_timeout,
+                                  listen, connect_timeout,
                                   keepidle, keepintvl, keepcnt,
                                   shutdown_timeout, shutdown_interval);
     if (!proxy) {
@@ -126,7 +140,7 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
                                  keepidle, keepintvl, keepcnt);
     
     if (listen(lsock, SOMAXCONN) < 0)
-        err(EXIT_FAILURE, "create_listener: listen");
+        err(TPX_WORKER_FATAL, "create_listener: listen");
 
     l->event_id = EV_LISTEN;
     l->fd = lsock;
@@ -138,7 +152,11 @@ listen_t *create_listener(const tpx_listen_conf_t *config, SSL_CTX *ctx) {
     if (ret == TPX_FAILURE) {
         close(lsock);
         free(l);
-        errx(EXIT_FAILURE, "create_listener: Couldn't make listener");
+        errx(TPX_WORKER_FATAL, "create_listener: Couldn't make listener (fatal)");
+    } else if (ret == TPX_AGAIN) {
+        close(lsock);
+        free(l);
+        errx(EXIT_FAILURE, "create_listener: Couldn't make listener (temporary)");
     }
 
     return l;
@@ -159,7 +177,8 @@ int bind_listen_sock(listen_t *l, const char *host,
     struct addrinfo *listen_addr, *lp;
     int gai_err = getaddrinfo(host, service, &hints, &listen_addr);
     if (gai_err != 0)
-        errx(EXIT_FAILURE, "bind_listen_sock: getaddrinfo (%s:%d): %s",
+        errx(gai_exit_code(gai_err),
+             "bind_listen_sock: getaddrinfo (%s:%d): %s",
              host, port, gai_strerror(gai_err));
 
     int fd = -1;
@@ -173,35 +192,43 @@ int bind_listen_sock(listen_t *l, const char *host,
 
         opt = 1;
         if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuseaddr)");
+            err(TPX_WORKER_FATAL, "bind_listen_sock: setsockopt (reuseaddr)");
 
         if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (reuseport)");
+            err(TPX_WORKER_FATAL, "bind_listen_sock: setsockopt (reuseport)");
 
         // These options are set here and inherited by accepted sockets
         if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepalive)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable keepalive on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = keepidle;
         if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,
                        &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepidle)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp keepidle on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = keepintvl;
         if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL,
                        &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepintvl)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp keepintvl on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = keepcnt;
         if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,
                        &opt, sizeof(opt)) == -1)
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (keepcnt)");
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp keepcnt on listen socket",
+                           TPX_ERR_ERRNO);
 
         opt = 0;
         if (lp->ai_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6,
                                                     IPV6_V6ONLY, &opt,
                                                     sizeof(opt)))
-            err(EXIT_FAILURE, "bind_listen_sock: setsockopt (ipv6)");
+            err(TPX_WORKER_FATAL, "bind_listen_sock: setsockopt (ipv6)");
 
         if (bind(fd, lp->ai_addr, lp->ai_addrlen) < 0) {
             perror("bind_listen_sock: bind");
@@ -213,7 +240,7 @@ int bind_listen_sock(listen_t *l, const char *host,
     }
     if (lp == NULL || fd == -1) {
         freeaddrinfo(listen_addr);
-        errx(77, "Couldn't bind on any addresses");
+        errx(TPX_WORKER_FATAL, "Couldn't bind on any addresses");
     }
 
     memcpy(&l->listen_addr, lp->ai_addr, lp->ai_addrlen);
@@ -238,7 +265,7 @@ tpx_err_t get_conn(const char *host, const unsigned short port,
     if (error != 0) {
         fprintf(stderr, "getaddrinfo for listener (%s:%hu) failed: %s\n",
                 host, port, gai_strerror(error));
-        return TPX_FAILURE;
+        return error == EAI_AGAIN ? TPX_AGAIN : TPX_FAILURE;
     }
 
     memcpy(addr, connect_addr->ai_addr, connect_addr->ai_addrlen);

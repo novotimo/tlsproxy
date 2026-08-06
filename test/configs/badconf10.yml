@@ -1,10 +1,13 @@
-# Missing certs
+# Missing certs. A servcert on its own gives clients a leaf with nothing to
+# chain it to, so either cert-chain or cacerts has to be there. listen-port is
+# present so that libcyaml doesn't reject this before the check runs.
 
 nworkers: 1
 listeners:
   - name: ""
     target-ip: 127.0.0.1
     target-port: 9999
-    listen-ip: 9999
+    listen-ip: 127.0.0.43
+    listen-port: 9999
     servcert: SC
     servkey: SK

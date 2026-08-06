@@ -12,7 +12,7 @@ listeners:
     target-port: 8080
 
     ## If we can't connect to the server by this time, drop the connection
-    connect-timeout: 5000
+    connect-timeout: 5
 
     ## The proxy will accept connections on <listen-ip>:<listen-port>
     ## 0.0.0.0 means listen on every interface
@@ -33,7 +33,7 @@ listeners:
   #   target-ip: 127.0.0.1
   #   target-port: 8081
 
-  #   connect-timeout: 6000
+  #   connect-timeout: 6
 
   #   ## Note we're using the same IP/port combo for the listen socket
   #   ## That's right, we get basic load balancing too!
@@ -49,7 +49,7 @@ listeners:
   #   target-ip: 127.0.0.1
   #   target-port: 23
 
-  #   connect-timeout: 2000
+  #   connect-timeout: 2
 
   #   listen-ip: 0.0.0.0
   #   listen-port: 42023

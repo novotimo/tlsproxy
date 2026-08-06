@@ -71,6 +71,8 @@ typedef struct proxy_s {
     socklen_t client_addrlen; /**< @brief Length of client_addr */
     
     ngx_rbtree_node_t timer; /**< @brief The time when this event expires */
+    uint64_t conn_timeout; /**< @brief The amout of time a proxy has
+                            * to connect to the backend */
     uint64_t shutdown_time; /**< @brief The time when a proxy definitely has
                              * to shut down */
     uint64_t shutdown_timeout; /**< @brief The amout of time a proxy has
@@ -128,7 +130,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
  */
 proxy_t *create_proxy(int accepted_fd, SSL *ssl,
                       listen_t *listener,
-                      unsigned int conn_timeout,
+                      uint64_t conn_timeout,
                       int keepidle, int keepintvl, int keepcnt,
                       uint64_t shutdown_timeout, uint64_t shutdown_interval);
 
@@ -150,7 +152,7 @@ tpx_err_t proxy_add_to_epoll(proxy_t *proxy, int epollfd);
  * @return TPX_FAILURE on failure, TPX_AGAIN when we need to run this again
  *         (it would block), and TPX_SUCCESS when the connection is complete.
  */
-tpx_err_t proxy_handle_connect(proxy_t *proxy, unsigned int conn_timeout);
+tpx_err_t proxy_handle_connect(proxy_t *proxy, uint64_t conn_timeout);
 
 /**
  * @brief Handle a read from the client or server socket.

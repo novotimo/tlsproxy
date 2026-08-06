@@ -1,10 +1,12 @@
-# Missing servkey
+# Missing servkey, which the schema marks required, so libcyaml rejects this
+# one before tpx_validate_conf ever sees it.
 
 nworkers: 1
 listeners:
   - name: ""
     target-ip: 127.0.0.1
     target-port: 9999
-    listen-ip: 9999
+    listen-ip: 127.0.0.43
+    listen-port: 9999
     cacerts:
       - SC

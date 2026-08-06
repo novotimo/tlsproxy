@@ -7,6 +7,8 @@
 #define TPX_CLOSED  3 /**< This function closed the proxy/connection */
 #define TPX_EMPTY   10 /**< Error return for reading from empty queues */
 
+#define TPX_WORKER_FATAL 77
+
 typedef int tpx_err_t;
 
 /* static, not a bare `inline`: a C99 inline definition emits no external

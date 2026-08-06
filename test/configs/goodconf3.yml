@@ -1,6 +1,6 @@
 # Big conf
 
-nworkers: 999
+nworkers: 64
 logfile: loglogloglog.log
 loglevel: ERROR
 

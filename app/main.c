@@ -11,6 +11,7 @@
 #include <sys/signalfd.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -35,6 +36,12 @@
 
 #define TPX_VERSION_FLAG "-v"
 
+#define TPX_RESTART_MAX 5 /**< @brief This many restarts per worker before we
+                           * give up restarting them */
+#define TPX_RESTART_WINDOW 10 /**< @brief If more than TPX_RESTART_MAX*nworkers
+                               * restarts happen within this many seconds,
+                               * shut down the program */
+
 #define NAME closed /**< @brief The name of the hash set */
 #define KEY_TY uint64_t /**< @brief The key type of the hash set */
 #define HASH_FN vt_hash_integer /**< @brief The hash function */
@@ -55,6 +62,10 @@ void free_listeners(listen_t **listeners, size_t len);
 static inline uint64_t del_tag(void *ptr);
 
 void block_signals(sigset_t *mask, int logfd);
+tpx_err_t handle_signal(struct signalfd_siginfo *si,
+                        tpx_config_t **config,
+                        int *logfd,
+                        pid_t **pids);
 void init_shmem(void);
 int init_logger(tpx_config_t *config);
 
@@ -95,6 +106,9 @@ extern uint32_t nproxies;
 // We move environ's pointed-to block somewhere else to write argv[0] safely
 extern char **environ;
 
+static size_t   restarts = 0;
+static uint64_t window_start = 0;
+
 
 /** @brief Get usage and exit */
 void usage(const char *pname) {
@@ -121,13 +135,17 @@ void _fatal(int logfd, const char *msg, int errtype) {
 void _child_fatal(const char *msg, int errtype) {
     log_system_err(LL_FATAL, msg, errtype);
     if (in_startup)
-        errx(EXIT_FAILURE, "%s", msg);
+        errx(TPX_WORKER_FATAL, "%s", msg);
 }
 
 void save_environ(void) {
     for (char **cur = environ; *cur; ++cur)
         if ((*cur = strdup(*cur)) == NULL)
             err(EXIT_FAILURE, "duplicating environment string");
+}
+
+static inline void kill_safe(pid_t pid, int sig) {
+    if (pid != -1) kill(pid, sig);
 }
 
 void init_shmem(void) {
@@ -176,6 +194,7 @@ void block_signals(sigset_t *mask, int logfd) {
         _fatal(logfd, "sigprocmask failed blocking signals", TPX_ERR_ERRNO);
 }
 
+
 /** @brief Inits OpenSSL and epoll then passes to main loop */
 int main(int argc, char *argv[]) {
     if (argc < TPX_NARGS_MIN || argc > TPX_NARGS_MAX)
@@ -223,6 +242,8 @@ int main(int argc, char *argv[]) {
 
     log_startup(logfd, LL_INFO, argc, argv);
     log_config_load(logfd, LL_INFO, tpx_config);
+
+    check_keyfiles(logfd, tpx_config);
     
     // This can possibly overwrite environ a bit, so let's save it
     char **envp;
@@ -351,7 +372,7 @@ void parent_loop(tpx_config_t **config_,
     ev.data.fd = efd;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, efd, &ev) == -1) {
         for (size_t i=0; i<config->nworkers; ++i)
-            kill(pids[i], SIGKILL);
+            kill_safe(pids[i], SIGKILL);
         _fatal(logfd, "Couldn't add eventfd to epoll", TPX_ERR_ERRNO);
     }
     // Add signalfd
@@ -359,7 +380,7 @@ void parent_loop(tpx_config_t **config_,
     ev.data.fd = sigfd;
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &ev) == -1) {
         for (size_t i=0; i<config->nworkers; ++i)
-            kill(pids[i], SIGKILL);
+            kill_safe(pids[i], SIGKILL);
         _fatal(logfd, "Couldn't add signalfd to epoll", TPX_ERR_ERRNO);
     }
 
@@ -389,53 +410,15 @@ void parent_loop(tpx_config_t **config_,
             } else if (events[n].data.fd == sigfd) {
                 struct signalfd_siginfo si;
                 while (read(sigfd, &si, sizeof(si)) == sizeof(si)) {
-                    log_signal_m(logfd, LL_INFO, &si);
-
-                    if (si.ssi_signo == SIGCHLD) {
-                        // Don't want to leave any zombies
-                        pid_t pid = -1;
-                        int wstatus = 0;
-                        while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
-                            log_worker(logfd, LL_WARN, TPX_WORKER_DEAD, pid, wstatus);
-
-                            if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 77) {
-                                for (size_t i=0; i<config->nworkers; ++i)
-                                    kill(pids[i], SIGKILL);
-                                exit(77);
-                            }
-
-                            for (size_t i=0; i<config->nworkers; ++i) {
-                                if (pids[i] == pid) {
-                                    if (in_shutdown) {
-                                        --left_to_close;
-                                    } else {
-                                        respawn = 1;
-                                        finishing = 1;
-                                    }
-                                    pids[i] = -1;
-                                    break;
-                                }
-                            }
-                        }
-
+                    if (handle_signal(&si, config_, logfd_, pids_)
+                        == TPX_SUCCESS)
                         continue;
-                    } else if (si.ssi_signo == SIGHUP) {
-                        if (handle_reload(config_, logfd_, pids_) == 1)
-                            finishing = 1;
-                        continue;
-                    } else if (si.ssi_signo == SIGPIPE) {
-                        // All my homies hate SIGPIPE
-                        continue;
-                    }
-                
-                    in_shutdown = 1;
-                    left_to_close = config->nworkers;
-                    for (size_t i=0; i<left_to_close; ++i)
-                        kill(pids[i], SIGHUP);
+                    else
+                        finishing = 1;
                 }
             }
         }
-        
+
         if (in_shutdown && left_to_close == 0)
             exit(EXIT_SUCCESS);
 
@@ -570,7 +553,7 @@ tpx_config_t *load_config(const char *config_file) {
         errx(EXIT_FAILURE, "Config error with file '%s': %s",
              config_file, cyaml_strerror(conf_err));
         return NULL;
-    } else if (tpx_validate_conf(tpx_config) != TPX_SUCCESS) {
+    } else if (tpx_validate_conf(tpx_config, NULL) != TPX_SUCCESS) {
         errx(EXIT_FAILURE, "Config file '%s' failed verification", config_file);
     }
     
@@ -772,42 +755,8 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
         return 0;
     }
 
-    // This could be done better, I imagine. Make sure to watch config.c for
-    // changes to the logic in tpx_validate_conf
-    if (new_config->listeners_count < 1) {
-        log_system_err_m_ex(
-            *logfd, LL_ERROR, "Couldn't reload config", "No listeners provided");
+    if (tpx_validate_conf(new_config, logfd) == TPX_FAILURE)
         goto cleanup_conf;
-    }
-
-    for (size_t i=0; i<new_config->listeners_count; ++i) {
-        const tpx_listen_conf_t *listen_conf = &new_config->listeners[i];
-        if (!listen_conf->cert_chain && !listen_conf->cacerts) {
-            log_system_err_m_ex(
-                *logfd, LL_ERROR, "Couldn't reload config",
-                "Either 'cert-chain' or 'cacerts' must be provided");
-            goto cleanup_conf;
-        } else if (listen_conf->cert_chain &&
-                   (listen_conf->cacerts || listen_conf->servcert)) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'cert-chain' can't be used together with 'cacerts'"
-                                " or 'servcert'");
-            goto cleanup_conf;
-        } else if (listen_conf->cacerts && !listen_conf->servcert) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'servcert' must be specified if 'cacerts' is"
-                );
-            goto cleanup_conf;
-        } else if (listen_conf->listen_port > UINT16_MAX) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'listen-port' must be a valid port");
-            goto cleanup_conf;
-        } else if (listen_conf->target_port > UINT16_MAX) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                                "'target-port' must be a valid port");
-            goto cleanup_conf;
-        }
-    }
 
     uint8_t old_enabled = g_shmem->logger.enabled;
     uint8_t old_loglevel = g_shmem->logger.loglevel;
@@ -857,10 +806,12 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
 
     for (size_t i=0; i<old_workers; ++i)
-        kill((*pids)[i], SIGHUP);
+        kill_safe((*pids)[i], SIGHUP);
     left_to_close = old_workers;
     free(*pids);
     *pids = new_pids;
+
+    check_keyfiles(*logfd, *config);
 
     return 1;
 
@@ -870,4 +821,78 @@ restore_shmem:
 cleanup_conf:
     cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)new_config, 0);
     return 0;
+}
+
+
+tpx_err_t handle_signal(struct signalfd_siginfo *si,
+                        tpx_config_t **config_,
+                        int *logfd_,
+                        pid_t **pids_) {
+    uint8_t finishing = 0;
+    int logfd = logfd_ ? *logfd_ : -1;
+    tpx_config_t *config = *config_;
+    pid_t *pids = *pids_;
+
+    log_signal_m(logfd, LL_INFO, si);
+
+    if (si->ssi_signo == SIGCHLD) {
+        // Don't want to leave any zombies
+        pid_t pid = -1;
+        int wstatus = 0;
+        while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
+            log_worker(logfd, LL_WARN, TPX_WORKER_DEAD, pid, wstatus);
+
+            if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == TPX_WORKER_FATAL) {
+                for (size_t i=0; i<config->nworkers; ++i)
+                    kill_safe(pids[i], SIGKILL);
+                exit(TPX_WORKER_FATAL);
+            }
+
+            for (size_t i=0; i<config->nworkers; ++i) {
+                if (pids[i] == pid) {
+                    if (in_shutdown) {
+                        --left_to_close;
+                    } else {
+                        // A worker has shut down
+                        uint64_t now = gettime();
+                        if (now - window_start >
+                            TPX_RESTART_WINDOW * 1000) {
+
+                            window_start = now;
+                            restarts = 0;
+                        }
+
+                        if (++restarts > TPX_RESTART_MAX*config->nworkers) {
+                            log_system_err_m(logfd, LL_FATAL,
+                                             "Workers dying faster than they can be replaced",
+                                             TPX_ERR_PLAIN);
+                            for (size_t i=0; i<config->nworkers; ++i)
+                                kill_safe(pids[i], SIGKILL);
+                            exit(TPX_WORKER_FATAL);
+                        }
+                        respawn = 1;
+                        finishing = 1;
+                    }
+                    pids[i] = -1;
+                    break;
+                }
+            }
+        }
+
+        return finishing ? TPX_CLOSED : TPX_SUCCESS;
+    } else if (si->ssi_signo == SIGHUP) {
+        if (handle_reload(config_, logfd_, pids_) == 1)
+            return TPX_CLOSED;
+        return TPX_SUCCESS;
+    } else if (si->ssi_signo == SIGPIPE) {
+        // All my homies hate SIGPIPE
+        return TPX_SUCCESS;
+    }
+
+    in_shutdown = 1;
+    left_to_close = config->nworkers;
+    for (size_t i=0; i<left_to_close; ++i)
+        kill_safe(pids[i], SIGHUP);
+
+    return TPX_SUCCESS;
 }
