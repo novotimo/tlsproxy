@@ -24,7 +24,7 @@ tpx_err_t enqueue(bufq_t *queue, unsigned char *buf, size_t buflen) {
 
     if (!queue->first && !queue->last) {
         queue->first = queue->last = elem;
-        queue->write_idx = 0;
+        queue->write_idx = queue->read_idx = 0;
     } else {
         queue->last->next = elem;
         queue->last = elem;
@@ -44,7 +44,7 @@ tpx_err_t dequeue(bufq_t *queue, unsigned char **buf, size_t *buflen) {
     queue->first = elem->next;
     if (!queue->first) {
         queue->last = NULL;
-        queue->write_idx = -1;
+        queue->write_idx = 0;
     }
     
     if (buf)
@@ -115,7 +115,6 @@ bufq_t *queue_new(void) {
         perror("queue_new: calloc");
         return NULL;
     }
-    q->write_idx = -1;
     return q;
 }
 

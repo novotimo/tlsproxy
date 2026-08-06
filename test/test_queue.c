@@ -27,7 +27,7 @@ static void new_queue_valid(void **state) {
     assert_null(q->first);
     assert_null(q->last);
     assert_int_equal(q->read_idx, 0);
-    assert_int_equal(q->write_idx, -1);
+    assert_int_equal(q->write_idx, 0);
 
     queue_free(q);
 }
@@ -77,7 +77,8 @@ static void empty_queues(void **state) {
     queue_free(q);
 }
 
-/* write_idx should be >= 0 if there's a buffer and -1 otherwise */
+/* An enqueue onto an empty queue starts write_idx at 0, and draining the last
+   element puts the queue back the way queue_new() left it */
 static void write_idx(void **state) {
     bufq_t *q = queue_new();
     enqueue(q, NULL, 0);
@@ -95,7 +96,27 @@ static void write_idx(void **state) {
     assert_null(q->first);
     assert_null(q->last);
     assert_int_equal(q->read_idx, 0);
-    assert_int_equal(q->write_idx, -1);
+    assert_int_equal(q->write_idx, 0);
+    queue_free(q);
+}
+
+/* queue_empty() counts buffers, not bytes. A chunk whose data has all been
+   sent out is still a chunk, and src/proxy.c:proxy_handle_read() has to write
+   into it rather than append another, since the write path takes every chunk
+   but the last for full and would send the unwritten tail of this one to the
+   peer. */
+static void queue_empty_counts_buffers_not_bytes(void **state) {
+    bufq_t *q = queue_new();
+    unsigned char *buf = malloc(16);
+    assert_non_null(buf);
+    assert_int_equal(enqueue(q, buf, 16), TPX_SUCCESS);
+
+    // Everything written into the chunk has been read back out of it
+    q->write_idx = 9;
+    q->read_idx = 9;
+
+    assert_false(queue_empty(q));
+
     queue_free(q);
 }
 
@@ -107,7 +128,7 @@ static void dequeue_empty(void **state) {
     assert_null(q->first);
     assert_null(q->last);
     assert_int_equal(q->read_idx, 0);
-    assert_int_equal(q->write_idx, -1);
+    assert_int_equal(q->write_idx, 0);
     queue_free(q);
 }
 
@@ -239,6 +260,7 @@ int main(void) {
         cmocka_unit_test(buf_returned_unmolested),
         cmocka_unit_test(empty_queues),
         cmocka_unit_test(write_idx),
+        cmocka_unit_test(queue_empty_counts_buffers_not_bytes),
         cmocka_unit_test(dequeue_empty),
         cmocka_unit_test(peek_first_last),
         cmocka_unit_test(inconsistent_queue),
