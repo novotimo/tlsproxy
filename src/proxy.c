@@ -492,8 +492,19 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
     if (queue_empty(in_bufq)) {
         // Add new chunk
         rdbuf = malloc(TPX_NET_BUFSIZE);
+        if (!rdbuf) {
+            log_system_err(LL_ERROR, "Couldn't allocate new buffer",
+                           TPX_ERR_ERRNO);
+            return TPX_FAILURE;
+        }
+
         buflen = TPX_NET_BUFSIZE;
-        enqueue(in_bufq, rdbuf, buflen);
+        if (enqueue(in_bufq, rdbuf, buflen) == TPX_FAILURE) {
+            log_system_err(LL_ERROR, "Couldn't enqueue the read buffer",
+                           TPX_ERR_PLAIN);
+            free(rdbuf);
+            return TPX_FAILURE;
+        }
         in_bufq->write_idx = 0;
     } else {
         // Use existing chunk
@@ -520,8 +531,18 @@ tpx_err_t proxy_handle_read(proxy_t *proxy, int is_client) {
         assert(buflen >= (size_t)nbytes);
         if (in_bufq->write_idx + (size_t)nbytes == buflen) {
             rdbuf = malloc(TPX_NET_BUFSIZE);
+            if (!rdbuf) {
+                log_system_err(LL_ERROR, "Couldn't allocate new buffer",
+                               TPX_ERR_ERRNO);
+                return TPX_FAILURE;
+            }
             buflen = TPX_NET_BUFSIZE;
-            enqueue(in_bufq, rdbuf, buflen);
+            if (enqueue(in_bufq, rdbuf, buflen) == TPX_FAILURE) {
+                log_system_err(LL_ERROR, "Couldn't enqueue the read buffer",
+                               TPX_ERR_PLAIN);
+                free(rdbuf);
+                return TPX_FAILURE;
+            }
             in_bufq->write_idx = 0;
         } else {
             in_bufq->write_idx += (size_t)nbytes;

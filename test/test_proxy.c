@@ -113,6 +113,31 @@ int __wrap_fcntl(int fd, int op, ...) {
 static void *malloc_override;
 static int malloc_fails_next;
 
+/* Failure injection by allocation size, since proxy_handle_read() allocates
+   twice per chunk and a test needs to name which of the two it is failing: the
+   chunk is TPX_NET_BUFSIZE and the queue element enqueue() adds is
+   sizeof(bufq_elem_t). Counting every malloc the binary makes instead would
+   pin the test to cmocka's internals. malloc_fail_skip lets the first n of
+   that size through, which is how the rotation in the middle of the read loop
+   is reached. */
+static size_t malloc_fail_size;
+static unsigned int malloc_fail_skip;
+
+/* enqueue() takes ownership of the buffer on success and not on failure, so
+   the failure path has to free the chunk itself. Watching the one pointer
+   rather than logging every free keeps cmocka's own out of it, and a leak is
+   otherwise visible only under ASAN in CI. */
+static void *last_chunk;
+static int last_chunk_freed;
+
+void __real_free(void *ptr);
+void __wrap_free(void *ptr);
+void __wrap_free(void *ptr) {
+    if (ptr && ptr == last_chunk)
+        last_chunk_freed = 1;
+    __real_free(ptr);
+}
+
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size);
 void *__wrap_malloc(size_t size) {
@@ -120,12 +145,22 @@ void *__wrap_malloc(size_t size) {
         malloc_fails_next = 0;
         return NULL;
     }
+    if (malloc_fail_size && size == malloc_fail_size) {
+        if (malloc_fail_skip == 0) {
+            malloc_fail_size = 0;
+            return NULL;
+        }
+        malloc_fail_skip--;
+    }
     if (malloc_override) {
         void *p = malloc_override;
         malloc_override = NULL;
         return p;
     }
-    return __real_malloc(size);
+    void *p = __real_malloc(size);
+    if (size == TPX_NET_BUFSIZE)
+        last_chunk = p;
+    return p;
 }
 
 
@@ -336,6 +371,10 @@ static int reset_recorders(void **state) {
     last_assertion = NULL;
     malloc_override = NULL;
     malloc_fails_next = 0;
+    malloc_fail_size = 0;
+    malloc_fail_skip = 0;
+    last_chunk = NULL;
+    last_chunk_freed = 0;
     return 0;
 }
 
@@ -1149,6 +1188,92 @@ static void read_fills_the_chunk_a_rotation_left_behind(void **state) {
 }
 
 
+/* Both allocations behind a chunk can fail, and the queue has to come out of
+   either one untouched: nothing half-added, and no buffer stranded. enqueue()
+   takes ownership only when it succeeds, which is what makes the free on the
+   failure path correct rather than a double free.
+
+   fd is -1 rather than a made-up number, since nothing should reach the read
+   at all and an unarmed __wrap_read forwards to the real one. EBADF is a
+   deterministic answer to that; a live descriptor at some hardcoded number is
+   not. */
+static void read_reports_a_failed_chunk_allocation(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->hand_shaken = 1;
+
+    malloc_fails_next = 1;
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+    assert_true(queue_empty(p->s2c));
+
+    free_proxy(p);
+}
+
+static void read_frees_the_chunk_when_enqueue_fails(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->hand_shaken = 1;
+
+    // The chunk goes through, the element enqueue() adds for it does not
+    malloc_fail_size = sizeof(bufq_elem_t);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+
+    assert_true(queue_empty(p->s2c));
+    assert_non_null(last_chunk);
+    assert_true(last_chunk_freed);
+
+    free_proxy(p);
+}
+
+/* The same two failures at the rotation in the middle of the read loop, where
+   there is already a chunk on the queue and it has just been filled exactly.
+   The chunk that is there stays there and keeps its data; what is lost is the
+   read that would have followed. Every caller of proxy_handle_read() closes on
+   TPX_FAILURE, so the bytes already read into the full chunk go out on the
+   client side flush in PS_CLIENT_DISCONNECTED and are dropped with the proxy
+   on the server side, which is what the other failure returns here do too. */
+static void read_reports_a_failed_rotation(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->serv_fd = 11;
+    p->hand_shaken = 1;
+
+    // Let the first chunk through and fail the one the rotation asks for
+    malloc_fail_size = TPX_NET_BUFSIZE;
+    malloc_fail_skip = 1;
+
+    will_return(__wrap_read, TPX_NET_BUFSIZE);
+    will_return(__wrap_read, 0);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+
+    assert_false(queue_empty(p->s2c));
+    assert_ptr_equal(p->s2c->first, p->s2c->last);
+    assert_false(last_chunk_freed);
+
+    free_proxy(p);
+}
+
+static void read_frees_the_chunk_when_the_rotation_enqueue_fails(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_READY);
+    p->serv_fd = 11;
+    p->hand_shaken = 1;
+
+    // The first element goes through, the one for the rotated chunk does not
+    malloc_fail_size = sizeof(bufq_elem_t);
+    malloc_fail_skip = 1;
+
+    will_return(__wrap_read, TPX_NET_BUFSIZE);
+    will_return(__wrap_read, 0);
+    assert_int_equal(proxy_handle_read(p, 0), TPX_FAILURE);
+
+    assert_ptr_equal(p->s2c->first, p->s2c->last);
+    assert_true(last_chunk_freed);
+
+    free_proxy(p);
+}
+
+
 /* ------------------------------------------------------------------ */
 /* proxy_handle_write()                                                */
 /* ------------------------------------------------------------------ */
@@ -1441,6 +1566,15 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(read_fills_the_chunk_a_rotation_left_behind,
                                reset_recorders),
+        cmocka_unit_test_setup(read_reports_a_failed_chunk_allocation,
+                               reset_recorders),
+        cmocka_unit_test_setup(read_frees_the_chunk_when_enqueue_fails,
+                               reset_recorders),
+        cmocka_unit_test_setup(read_reports_a_failed_rotation,
+                               reset_recorders),
+        cmocka_unit_test_setup(
+            read_frees_the_chunk_when_the_rotation_enqueue_fails,
+            reset_recorders),
 
         cmocka_unit_test_setup(write_accepts_a_freshly_rotated_chunk,
                                reset_recorders),

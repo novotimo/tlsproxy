@@ -5,10 +5,15 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <cmocka.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/eventfd.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "macros.h"
+#include "shmem.h"
 
 
 // Wrap functions for mocking
@@ -243,6 +248,43 @@ static void new_queue(void **state) {
     assert_null(q);
 }
 
+/* The queue reports through the logger now rather than to stderr, so what is
+   worth pinning is that a failure reaches the log at all; how the line is
+   formatted is test_logging.c's question and it has sixty-odd tests on it.
+   write_idx moving is the whole of the claim, which is how test_logging.c asks
+   it too. The logger goes back off afterwards, since the rest of this suite
+   runs with it disabled and expects the silence. */
+static void enqueue_failure_reaches_the_log(void **state) {
+    bufq_t *q = queue_new();
+    assert_non_null(q);
+
+    pthread_mutexattr_t attrs;
+    assert_int_equal(pthread_mutexattr_init(&attrs), 0);
+    assert_int_equal(pthread_mutexattr_setpshared(&attrs,
+                                                  PTHREAD_PROCESS_SHARED), 0);
+    assert_int_equal(pthread_mutex_init(&g_shmem->logger.write_lock, &attrs),
+                     0);
+    assert_int_equal(pthread_mutexattr_destroy(&attrs), 0);
+
+    /* A real eventfd rather than the zero the mapping starts at:
+       _write_linebuf() writes the new line count to it to wake the master, and
+       descriptor 0 is stdin. */
+    g_shmem->logger.eventfd = eventfd(0, EFD_NONBLOCK);
+    assert_int_not_equal(g_shmem->logger.eventfd, -1);
+    g_shmem->logger.loglevel = LL_ERROR;
+    g_shmem->logger.enabled = 1;
+
+    uint32_t before = g_shmem->logger.write_idx;
+    will_return_ptr(__wrap_malloc, NULL);
+    assert_int_equal(enqueue(q, NULL, 0), TPX_FAILURE);
+    assert_int_not_equal(g_shmem->logger.write_idx, before);
+
+    g_shmem->logger.enabled = 0;
+    close(g_shmem->logger.eventfd);
+    g_shmem->logger.eventfd = -1;   // not a number a later write can reach
+    queue_free(q);
+}
+
 /* If we fail to make a new member in the queue, return TPX_FAILURE */
 static void enqueue_fail(void **state) {
     bufq_t *q = queue_new();
@@ -255,6 +297,18 @@ static void enqueue_fail(void **state) {
 
 
 int main(void) {
+    /* src/queue.c reports through the logger now, and log_system_err() reads
+       g_shmem->logger.enabled before it decides to do nothing, so a queue
+       error path segfaults on the unmapped pointer rather than returning the
+       failure it is being asked about. Every other suite that reaches src/
+       maps this; the queue suite did not have to until the queue started
+       logging. enabled = 0 is what MAP_ANONYMOUS gives anyway and is here to
+       say the silence is deliberate. */
+    g_shmem = mmap(NULL, sizeof(shared_t), PROT_READ | PROT_WRITE,
+                   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    assert_non_null(g_shmem);
+    g_shmem->logger.enabled = 0;
+
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(new_queue_valid),
         cmocka_unit_test(buf_returned_unmolested),
@@ -268,6 +322,7 @@ int main(void) {
         cmocka_unit_test(free_inconsistent),
         cmocka_unit_test(new_queue),
         cmocka_unit_test(enqueue_fail),
+        cmocka_unit_test(enqueue_failure_reaches_the_log),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);
