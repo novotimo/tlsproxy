@@ -54,3 +54,12 @@ foreach(i RANGE ${count})
   target_include_directories(${test_name} PUBLIC "${TEST_INC}")
 endforeach()
 # add_custom_target(build_tests DEPENDS ${TEST_TARGETS})
+
+# app/main.c is linked into the tlsproxy executable and not into the proxy
+# library the cmocka binaries use, so the two event loops are only reachable by
+# running the program.
+add_test(NAME integration_signals
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/signals.sh
+                 $<TARGET_FILE:tlsproxy>
+                 ${TLSProxy_SOURCE_DIR}/example)
+set_tests_properties(integration_signals PROPERTIES TIMEOUT 60)
