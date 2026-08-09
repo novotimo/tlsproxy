@@ -706,13 +706,18 @@ static void write_logs_returns_a_message_whose_header_wrapped(void **state) {
     assert_int_equal(logger->read_idx, logger->write_idx);
 }
 
-/* write_logs consumes the length prefix before it writes anything, so a failed
-   write leaves read_idx pointing into the middle of a message. The next drain
-   reads four body bytes as a length and either trips the linelen assert or, in
-   a Release build, writes a wild slice of the buffer to the log. Rolling back
-   to the start of the message is what makes a failed write cost one message
-   instead of the stream. */
-static void write_logs_keeps_the_read_index_on_a_message_boundary(
+/* write_logs consumes the length prefix before it writes anything, so a write
+   that fails outright leaves read_idx pointing into the middle of a message.
+   The next drain reads four body bytes as a length and either resynchronizes
+   onto write_idx, losing everything queued behind it, or in a Release build
+   writes a wild slice of the buffer to the log. Rewinding over the prefix is
+   what makes a failed write cost nothing at all.
+
+   Zero bytes taken is the case where the rewind lands exactly where it
+   started, so the cursor does not move and the prefix is rewritten with the
+   value it already held. A partial write moves it; that is
+   write_logs_finishes_a_line_the_kernel_only_partly_took. */
+static void write_logs_leaves_the_cursor_alone_when_nothing_was_taken(
     void **state) {
     (void)state;
     log_system_err(LL_ERROR, "will not be written", TPX_ERR_PLAIN);
@@ -940,23 +945,20 @@ static void write_logs_does_not_spin_on_a_stale_eintr(void **state) {
    exactly and reversibly; a small non-blocking pipe does not, because Linux
    answers EAGAIN rather than taking what fits.
 
-   write_logs now retries a short write in a loop, which is the right shape and
-   fixes the case where the filesystem takes part of a line and then accepts the
-   rest. What it does not fix is the case here, where the retry itself fails:
+   The retry loop covers the case where the filesystem takes part of a line and
+   then accepts the rest. This is the other one, where the retry itself fails:
    RLIMIT_FSIZE takes 96 bytes of the line and then refuses the remainder with
-   EFBIG for good.
+   EFBIG for good, so the rollback runs with bytes already in the file. It
+   re-frames the unwritten tail as a message of its own and commits the cursor
+   onto that new prefix, which leaves the next drain owing the file the rest of
+   the line rather than the whole of it.
 
-   At that point the rollback runs, and it rewinds read_idx by exactly
-   LINEBUF_OFFSET -- back over the length prefix, not back over the 96 bytes
-   already written. read_idx is left 92 bytes inside the message body, pointing
-   at four bytes of indeterminate data written by the uninitialised union (see
-   write_logs_preserves_the_message_a_failed_write_rolled_back). The next drain
-   reads those four bytes as a length.
-
-   So this test still fails, and it fails one step further along than it used
-   to: not "the tail was never written" but "the rollback landed mid-message".
-   Debug trips write_logs' own assert that read_idx sits just past a NUL;
-   Release has NDEBUG and silently desyncs the stream instead. */
+   The claim is that the two halves join: what the capped fd took, followed by
+   what the next drain sends, is the line the worker wrote, once, byte for
+   byte. That covers both ways this can go wrong, since a cursor left on the
+   old prefix repeats the first 96 bytes, and the four bytes the rollback
+   writes corrupt the body if they land anywhere the file has not already
+   seen. */
 static void write_logs_finishes_a_line_the_kernel_only_partly_took(
     void **state) {
     (void)state;
@@ -984,15 +986,42 @@ static void write_logs_finishes_a_line_the_kernel_only_partly_took(
     msg[sizeof(msg) - 1] = '\0';
     log_system_err(LL_ERROR, msg, TPX_ERR_PLAIN);
 
-    write_logs(fd, logger, take_event_count());
+    /* The line as the worker framed it, copied out before the rollback
+       rewrites four of its bytes: everything after the length prefix, up to
+       but not including the terminator. */
+    uint32_t framed = 0;
+    memcpy(&framed, &logger->log_buf[logger->read_idx], sizeof(framed));
+    uint32_t bodylen = framed - LINEBUF_OFFSET;
+    static char body[TPX_LOG_LINE_MAX + 1];
+    for (uint32_t j = 0; j < bodylen; ++j)
+        body[j] = logger->log_buf[(logger->read_idx + LINEBUF_OFFSET + j)
+                                  % TPX_LOGBUF_SIZE];
 
-    uint32_t r = logger->read_idx;
-    int on_boundary = (r == 0) || (logger->log_buf[r - 1] == '\0');
+    uint64_t queued = take_event_count();
+    assert_int_equal(write_logs(fd, logger, queued), 0);
 
     signal(SIGXFSZ, saved_xfsz);
     assert_int_equal(setrlimit(RLIMIT_FSIZE, &saved), 0);
+
+    // What the capped fd took, which has to be some of the line and not all.
+    off_t taken = lseek(fd, 0, SEEK_END);
+    assert_true(taken > 4000);
+    size_t nfile = (size_t)(taken - 4000);
+    assert_true(nfile < bodylen);
+
+    static char joined[TPX_LOG_LINE_MAX + 1];
+    assert_int_equal(lseek(fd, 4000, SEEK_SET), 4000);
+    assert_int_equal(read(fd, joined, nfile), (ssize_t)nfile);
     close(fd);
-    assert_true(on_boundary);
+
+    // The remainder, against an fd that works.
+    assert_int_equal(write_logs(logpipe[1], logger, queued), queued);
+    size_t npipe = read_logs();
+    assert_int_equal(nfile + npipe, bodylen);
+    memcpy(joined + nfile, logtext, npipe);
+
+    assert_memory_equal(joined, body, bodylen);
+    assert_int_equal(assert_fail_calls, 0);
 }
 
 /* TPX_LOG_LINE_MAX is the ceiling the append functions enforce, so a line can
@@ -1604,7 +1633,7 @@ int main(void) {
         T(write_logs_drains_exactly_the_count_it_was_given),
         T(write_logs_returns_a_message_whose_body_wrapped),
         T(write_logs_returns_a_message_whose_header_wrapped),
-        T(write_logs_keeps_the_read_index_on_a_message_boundary),
+        T(write_logs_leaves_the_cursor_alone_when_nothing_was_taken),
         T(write_logs_preserves_the_message_a_failed_write_rolled_back),
         T(write_logs_survives_a_corrupt_framed_length),
         T(write_logs_survives_a_corrupt_length_at_the_wrap),
