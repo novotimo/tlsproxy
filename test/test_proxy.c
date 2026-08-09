@@ -60,13 +60,7 @@ extern uint32_t nproxies;
              (q, buf, buflen)) \
     WRAP_FUN(queue_peek_last, int, \
              (bufq_t *q, unsigned char **buf, size_t *buflen),  \
-             (q, buf, buflen)) \
-    WRAP_FUN(ngx_rbtree_delete, void, \
-             (ngx_rbtree_t *tree, ngx_rbtree_node_t *node),     \
-             (tree, node)) \
-    WRAP_FUN(ngx_rbtree_insert, void, \
-             (ngx_rbtree_t *tree, ngx_rbtree_node_t *node),     \
-             (tree, node))
+             (q, buf, buflen))
 
 WRAPPED_FUNCS
 #undef WRAP_FUN
@@ -310,6 +304,61 @@ int __wrap_epoll_ctl(int efd, int op, int fd, struct epoll_event *e) {
 }
 
 
+/* The timer tree is the one piece of state a single proxy can corrupt for
+   every other connection the worker holds, since ngx_rbtree_insert() on a node
+   that is already linked either faults inside the rebalance or leaves the node
+   at two positions, where proxy_close()'s single delete unlinks one and the
+   tree walks off the other. A return-value wrapper cannot see any of that, so
+   these track which nodes the tree is holding and count the two ways the
+   pairing can break. */
+static struct {
+    unsigned int inserts;
+    unsigned int deletes;
+    unsigned int double_inserts;
+    unsigned int unlinked_deletes;
+    unsigned int nlinked;
+    const ngx_rbtree_node_t *linked[MAX_RECORDED];
+} rbtree_log;
+
+static int node_is_linked(const ngx_rbtree_node_t *node) {
+    for (unsigned int i = 0; i < rbtree_log.nlinked; ++i)
+        if (rbtree_log.linked[i] == node)
+            return 1;
+    return 0;
+}
+
+/* Neither wrapper forwards to __real_: `timeouts` is only initialized by
+   proxy_init_timeouts(), which nothing in this binary calls, so a real insert
+   would walk an uninitialized root. */
+void __wrap_ngx_rbtree_insert(ngx_rbtree_t *tree, ngx_rbtree_node_t *node);
+void __wrap_ngx_rbtree_insert(ngx_rbtree_t *tree, ngx_rbtree_node_t *node) {
+    (void)tree;
+    if (node_is_linked(node))
+        rbtree_log.double_inserts++;
+    else if (rbtree_log.nlinked < MAX_RECORDED)
+        rbtree_log.linked[rbtree_log.nlinked++] = node;
+    rbtree_log.inserts++;
+    if (has_mock())
+        (void)mock();
+}
+
+void __wrap_ngx_rbtree_delete(ngx_rbtree_t *tree, ngx_rbtree_node_t *node);
+void __wrap_ngx_rbtree_delete(ngx_rbtree_t *tree, ngx_rbtree_node_t *node) {
+    (void)tree;
+    if (!node_is_linked(node))
+        rbtree_log.unlinked_deletes++;
+    for (unsigned int i = 0; i < rbtree_log.nlinked; ++i) {
+        if (rbtree_log.linked[i] == node) {
+            rbtree_log.linked[i] = rbtree_log.linked[--rbtree_log.nlinked];
+            break;
+        }
+    }
+    rbtree_log.deletes++;
+    if (has_mock())
+        (void)mock();
+}
+
+
 /* The real log_proxy() dereferences proxy->client_addr with no NULL check
    (src/logging.c:log_proxy()). Recording the argument instead of forwarding it
    lets a test observe a bad call rather than be killed by it, and is
@@ -366,6 +415,7 @@ static int reset_recorders(void **state) {
     memset(&ssl_write_log, 0, sizeof(ssl_write_log));
     memset(&ssl_shutdown_log, 0, sizeof(ssl_shutdown_log));
     memset(&epoll_log, 0, sizeof(epoll_log));
+    memset(&rbtree_log, 0, sizeof(rbtree_log));
     memset(&log_proxy_log, 0, sizeof(log_proxy_log));
     assert_fail_calls = 0;
     last_assertion = NULL;
@@ -1125,6 +1175,57 @@ static void handle_proxy_ignores_high_tag_bits(void **state) {
     }
 }
 
+/* proxy_handle_connect() arms the connect timeout and is also the only thing
+   that disarms it, on the branch where a later connect() completes. A client
+   event that arrives while the backend connect is outstanding never goes
+   through that function, since the connecting cases return early for the
+   server side only and fall through to the ready path for the client, so a
+   close_notify there used to move the proxy to PS_CLIENT_DISCONNECTED with the
+   connect timer still on the tree. handle_server_disconnected() then writes a
+   new key into the same node and inserts it again.
+
+   Three ordinary events in the order epoll delivers them, and nothing poked
+   into the proxy by hand: a health checker against a saturated backend hangs
+   up during the connect, and a backend at its connection limit closes as soon
+   as it answers. */
+static void client_close_while_connecting_disarms_the_timer(void **state) {
+    (void)state;
+    proxy_t *p = new_proxy(PS_CLIENT_CONNECTED);
+    p->client_fd = 42;
+    p->serv_fd = 43;
+    p->hand_shaken = 1;
+
+    // The backend connect blocks, which is the only thing that arms the timer.
+    will_return(__wrap_connect, -1);
+    will_return(__wrap_connect, EINPROGRESS);
+    assert_int_equal(handle_proxy(p, 7, EPOLLOUT, TAG_SERVER), TPX_AGAIN);
+    assert_int_equal(p->state, PS_SERVER_CONNECTING);
+    assert_true(p->timer_set);
+    assert_int_equal(rbtree_log.inserts, 1);
+
+    // The client's close_notify lands before the connect finishes. The backend
+    // read at the end of the pass is still on a socket that has not connected.
+    will_return(__wrap_SSL_read, -1);
+    will_return(__wrap_SSL_get_error, SSL_ERROR_ZERO_RETURN);
+    will_return(__wrap_read, -1);
+    will_return(__wrap_read, EAGAIN);
+    assert_int_equal(handle_proxy(p, 7, EPOLLIN, TAG_CLIENT), TPX_SUCCESS);
+    assert_false(p->timer_set);
+    assert_int_equal(rbtree_log.nlinked, 0);
+
+    // The backend closes, which is where the second insert used to happen.
+    will_return(__wrap_read, 0);
+    will_return(__wrap_read, 0);
+    will_return(__wrap_SSL_get_error, SSL_ERROR_NONE);
+    assert_int_equal(handle_proxy(p, 7, EPOLLIN, TAG_SERVER), TPX_CLOSED);
+
+    assert_int_equal(rbtree_log.double_inserts, 0);
+    assert_int_equal(rbtree_log.unlinked_deletes, 0);
+    assert_int_equal(rbtree_log.nlinked, 0);
+    assert_int_equal(assert_fail_calls, 0);
+    // proxy_close() ran, so there is nothing left to free here.
+}
+
 
 /* ------------------------------------------------------------------ */
 /* proxy_handle_read()                                                 */
@@ -1630,6 +1731,8 @@ int main(void) {
             client_flushed_lingers_when_the_peer_has_not_replied,
             reset_recorders),
         cmocka_unit_test_setup(handle_proxy_ignores_high_tag_bits,
+                               reset_recorders),
+        cmocka_unit_test_setup(client_close_while_connecting_disarms_the_timer,
                                reset_recorders),
 
         cmocka_unit_test_setup(read_entry_invariants_hold_on_a_fresh_queue,

@@ -297,7 +297,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             }
             return ret;
         }
-        // If we're the server socket we keep going
+        // If we're the client socket we keep going
         __attribute__((fallthrough));
     case PS_READY:
         assert(events);
@@ -317,6 +317,15 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
         
         if (ret != TPX_SUCCESS || (is_client && proxy->client_notified_close)) {
             if (is_client) {
+                // Make sure the client's timeout isn't still in the rbtree
+                // when the shutdown timer is going to be set. This can
+                // only happen if we get here via the fallthrough
+                if (proxy->timer_set &&
+                    (proxy->state == PS_CLIENT_CONNECTED
+                     || proxy->state == PS_SERVER_CONNECTING)) {
+                    ngx_rbtree_delete(&timeouts, &proxy->timer);
+                    proxy->timer_set = 0;
+                }
                 proxy->state = PS_CLIENT_DISCONNECTED;
             } else {
                 // If we haven't finished our handshake, just quit

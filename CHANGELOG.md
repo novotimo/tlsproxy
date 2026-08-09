@@ -64,6 +64,30 @@ re-registered for `EPOLLIN` alone and the proxy moves to `PS_SERVER_FLUSHED`,
 which reads the backend until it EOFs. No assert was involved, so Debug and
 Release behaved identically.
 
+## Connect timeout (#57)
+
+`proxy_handle_connect()` arms the connect timeout, and the branch where a later
+`connect()` completes is the only place that disarms it. A client event that
+arrives while the backend connect is still outstanding never goes through that
+function, since the connecting states return early for the backend leg alone
+and fall through to the ready path for the client, so a client that closed
+there moved to `PS_CLIENT_DISCONNECTED` with its node still on the timer tree.
+Once the backend closed as well, `handle_server_disconnected()` wrote a new key
+into that node and inserted it a second time, which tripped its
+`assert(!timer_set)` in Debug and, with the assert compiled out, either faulted
+inside the insert's rebalance or left the node linked at two positions for the
+single `ngx_rbtree_delete()` in `proxy_close()`. The tree holds every armed
+timer the worker has, so the damage was to every connection on that worker
+rather than to the one that triggered it. A backend slow enough to still be
+connecting when the client hangs up is ordinary, and so is a backend at its
+connection limit closing as soon as it answers.
+
+The connect timer is dropped now when the client goes away while the connect is
+outstanding. Nothing is armed in its place, so a proxy that still has data
+queued for a backend whose connect never completes waits out the kernel's SYN
+retries instead of `connect-timeout`, which is around 127 seconds at the
+default `tcp_syn_retries` of 6.
+
 ## Logging (#27)
 
 - `_write_linebuf()` returned still holding the write lock when the ring buffer
