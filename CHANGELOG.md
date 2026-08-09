@@ -212,6 +212,25 @@ in Debug and was inert in Release.
   `outbuf_empty()` rejects an empty queue on entry, and the case is now
   reported as queue corruption.
 
+## Queue and logging invariants (#56)
+
+`bufq_t`'s `read_idx` and `write_idx` were `int` with `-1` for empty and were
+compared against a `size_t buflen` on the hot path, which put
+`SSL_write(ssl, NULL, SIZE_MAX)` one deleted assert away. They are `size_t` now
+with `queue_empty()` carrying the empty case, so the type holds the invariant
+rather than a check that `NDEBUG` removes from the shipped image. A
+`_Static_assert` pins `TPX_NET_BUFSIZE` below `INT_MAX`, since it is passed to
+`SSL_read()` and `SSL_write()` as an `int`.
+
+- The asserts in `write_logs()` that a corrupt ring could trip are runtime
+  checks that log and return, and the ones left are programming-error
+  invariants that a valid input cannot reach.
+- Allocation failures in `enqueue()` and in the read path are checked and
+  reported rather than dereferenced.
+- The queue's diagnostics go to the log instead of `stderr` and `perror()`, so
+  a worker's complaint about a corrupt queue reaches the same place everything
+  else does.
+
 ## Hardening (#14)
 
 - Our own code and the tests compile under `-Wall -Wextra -Wshadow
