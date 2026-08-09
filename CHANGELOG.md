@@ -178,6 +178,24 @@ Teardown is now a state machine, working through `PS_SERVER_DISCONNECTED`,
 - `proxy_handle_connect()` treats `EALREADY` as retryable, which is what its
   documented contract in `inc/proxy.h` always said.
 
+## Signals (#50)
+
+`epoll_wait()` returns `-1` with `EINTR` when the process is stopped and
+continued, and `SIGSTOP` cannot be blocked, so the `sigprocmask()` in
+`block_signals()` does not prevent it. Both loops then walked their event array
+with `nfds == -1` converted to `size_t`, which is a bound of `SIZE_MAX` over a
+100-element automatic array. No assert is involved, so Debug and Release
+behaved the same way.
+
+- `parent_loop()` treated `_fatal()` as though it terminated. It does during
+  startup, but `in_startup` is cleared before the loop and after that it logs
+  and returns, which is what keeps a failed reload from killing the master. It
+  goes back to `epoll_wait()` now.
+- `child_loop()` recognized `EINTR` already, though its `break` left the
+  `switch` rather than the loop and it fell into the same walk. The master
+  logged the worker as killed by signal 11 and respawned it, so that half cost
+  the connections the worker held rather than the service.
+
 ## Debug builds (#30)
 
 Three asserts that a normal connection tripped, each of which aborted a worker
@@ -229,6 +247,11 @@ hold one.
   handles SIGFPE, SIGILL, SIGSEGV, SIGBUS and SIGSYS but not SIGABRT, so a
   tripped assert in `src/` previously killed the binary with no report and left
   every later test unrun.
+- `test/integration/signals.sh` starts the built binary, stops and continues
+  the master and then the workers, and checks that nothing died and that the
+  listener still accepts. `app/main.c` is linked into the executable and not
+  into the library the cmocka binaries use, so neither event loop is reachable
+  from them.
 - CI runs unit tests, a Release build at `-O2` under `-Werror`, ASAN with
   UBSAN, Valgrind memcheck and coverage with a floor. The sanitizer job gates
   on diagnostics rather than exit code, since UBSAN reports and carries on.

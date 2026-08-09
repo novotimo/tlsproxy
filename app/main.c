@@ -389,8 +389,10 @@ void parent_loop(tpx_config_t **config_,
     for (;;) {
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, -1);
 
-        if (nfds == -1)
+        if (nfds == -1) {
             _fatal(logfd, "Couldn't wait on the epollfd", TPX_ERR_ERRNO);
+            continue;
+        }
         for (size_t n=0; n<(size_t)nfds; ++n) {
             if (events[n].data.fd == efd) {
                 uint64_t count = 0;
@@ -493,16 +495,15 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs,
         
         int nfds = epoll_wait(epollfd, events, TPX_MAX_EVENTS, next_timeout);
         if (nfds == -1) {
-          switch(errno) {
-          case EINTR:
-            log_system_err(LL_ERROR, "Waiting on epoll", TPX_ERR_ERRNO);
-            break;
-          default:
-            _child_fatal("Waiting on epoll", TPX_ERR_ERRNO);
-            return;
-          }
+            if (errno == EINTR) {
+                log_system_err(LL_ERROR, "Waiting on epoll", TPX_ERR_ERRNO);
+                continue;
+            } else {
+                _child_fatal("Waiting on epoll", TPX_ERR_ERRNO);
+                return;
+            }
         }
-          
+
         for (size_t n=0; n < (size_t)nfds; ++n) {
             if (events[n].data.fd == sigfd) {
                 struct signalfd_siginfo si;
