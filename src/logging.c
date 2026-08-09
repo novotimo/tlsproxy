@@ -120,10 +120,11 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
         uint32_t r_idx = logger->read_idx;
         int will_wrap = w_idx < r_idx;
         
-        // Invariants
+        // Invariants.
+        // The write index follows a NULL, but the read index doesn't always,
+        // since we could have a partial log file write
         assert(r_idx < TPX_LOGBUF_SIZE);
         assert(w_idx < TPX_LOGBUF_SIZE);
-        assert(logger->log_buf[RING_PREV(r_idx)] == '\0');
         assert(logger->log_buf[RING_PREV(w_idx)] == '\0');
 
         // More events than there are messages. Reading anyway takes a length
@@ -203,7 +204,8 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             // We don't want to crash here
             perror("Writing log failed");
 
-            // Write the length of the unwritten bytes back into our ring buffer
+            // For a partial write, we rewrite the length of the log line
+            // to the ring buffer and update the read index to match
             if (linelen > 0) {
                 union {
                     char b[LINEBUF_OFFSET];
@@ -215,6 +217,8 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
                     logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
                 }
             }
+
+            logger->read_idx = r_idx;
             return i;
         }
 
@@ -232,7 +236,8 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 
         logger->read_idx = r_idx;
 
-        // Invariants. Only r_idx moved, so only r_idx is worth restating
+        // Invariants. Only r_idx moved, and this is the path the line went
+        // out whole on, so the terminator really is behind us here.
         assert(r_idx < TPX_LOGBUF_SIZE);
         assert(logger->log_buf[RING_PREV(r_idx)] == '\0');
     }

@@ -104,17 +104,37 @@ default `tcp_syn_retries` of 6.
   written after it, so a message that exactly filled the ring left
   `write_idx == read_idx`, which is the encoding for empty, and the next writer
   overwrote unread data.
-- `write_logs()` retries a short write and only advances the read index on a
-  message boundary, rather than treating any non-negative `write()` return as
-  complete and landing the index mid-message. A rollback no longer moves the
-  read index at all, and the remaining event count is re-emitted on the eventfd
-  instead of being discarded, which is what previously turned a transient
-  logfile error into bytes stranded in the ring forever.
+- `write_logs()` retries a short write and only advances the read index onto a
+  length prefix, rather than treating any non-negative `write()` return as
+  complete and landing the index mid-message. A write that takes nothing
+  rewinds over the prefix it consumed, and the remaining event count is
+  re-emitted on the eventfd instead of being discarded, which is what
+  previously turned a transient logfile error into bytes stranded in the ring
+  forever.
 - `_linebuf_append()` bounds-checks the unsanitized path, `write_logs()`
   accepts the longest line the builder can produce, and `errno` is cleared
   before the calls whose result is read out of it. The re-emit passed the event
   count itself where `write()` wanted its address, so the one path that was
   meant to recover from a failed log write read from a wild pointer.
+
+## Partly written log lines (#58)
+
+- A `write()` that took part of a line and then refused the rest, which is what
+  a filesystem filling up mid-line does to the regular file `init_logger()`
+  opens, left the read index where it started. The next drain read the original
+  length and sent the line from the beginning, so the file was left holding the
+  first fragment twice. The rollback commits the cursor it rewound now, and the
+  next drain owes the file the remainder rather than the whole line.
+- The four bytes that rollback writes are the length prefix framing the
+  remainder, and they now land over body the kernel has already taken rather
+  than in the middle of a line that is about to be sent again. They go into the
+  ring after `_sanitize_c()` has run and they routinely contain NULs, so a
+  reader parsing logfmt previously found an embedded NUL in the middle of a
+  field.
+- The read cursor no longer carries the invariant that it sits one byte past a
+  terminator, since a re-framed remainder begins in the middle of what was one
+  message. The write cursor still carries it, because a worker publishes a
+  whole line or nothing, and the framed length check covers the read side.
 
 ## Audit records (#28)
 
