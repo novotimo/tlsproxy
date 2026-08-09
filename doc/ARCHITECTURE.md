@@ -138,11 +138,16 @@ In general, the proxy is a state machine created when a connection is accepted o
 - `PS_SERVER_CONNECTING`
 - `PS_READY`
 - `PS_SERVER_DISCONNECTED`
+- `PS_CLIENT_FLUSHED`
+- `PS_CLOSE_NOTIFY_SENT`
 - `PS_CLIENT_DISCONNECTED`
+- `PS_SERVER_FLUSHED`
 
 The proxy will be created once the client fully finishes its TLS handshake and is fully connected and authenticated. So, the first state is "Client connected". When this happens, we start trying to connect to the server and set the state to "Server connecting". Once it's connected, we move to "Ready".
 
-In the "Ready" state, we forward the data received on both sockets to the other, after encryption/decryption. When one side disconnects, we move to the respective state, as the situations are different: if the server disconnects, we still need to do a graceful TLS shutdown. If the client disconnects, we can just send a connection reset to the server.
+In the "Ready" state, we forward the data received on both sockets to the other, after encryption/decryption. When one side disconnects, we move to the respective state, as the situations are different, and each side has its own pair of states because the flush and the teardown are separate steps.
+
+If the server disconnects, we finish flushing to the client, which is `PS_CLIENT_FLUSHED`, then send our `close_notify` and linger for the client's reply, which is `PS_CLOSE_NOTIFY_SENT`. If the client disconnects, we still owe the server whatever the client already sent, so `PS_CLIENT_DISCONNECTED` keeps writing until that queue empties and then half-closes the backend leg with `shutdown(SHUT_WR)`. A client that only half-closed is still reading, so `PS_SERVER_FLUSHED` goes on reading the backend until it EOFs and hands over to `PS_SERVER_DISCONNECTED`. The backend socket is re-registered for `EPOLLIN` alone at that point, since a socket we will never write to again is writable forever and every one of those edges would otherwise come back to a handler with nothing to do.
 
 The important decision regarding the proxy context (`proxy_t` in `inc/proxy.h`) was to use the same context for both sockets in the proxy pair. This begs the question, how do you tell events apart? When using `epoll_wait`, you get back an arbitrary 64-bit value, either an fd, or a pointer to something. We want the pointer to be towards the same data, but we want to tell the pointers apart without needing the other one and without wasting too much space. So, we've chosen to tag the pointers: malloc aligns to an 8-byte boundary, and so the last 3 bits of the pointer can be used for other things. We use the last bit of the pointer as a tag: `uint8_t tag = (uintptr_t)event & 0x1`. If this tag is 1, this is the client socket. If it's 0, this is the server socket. We strip the tag as soon as possible so that we don't dereference the proxy pointer misaligned by one byte.
 

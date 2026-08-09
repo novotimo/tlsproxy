@@ -46,6 +46,24 @@ Teardown is now a state machine, working through `PS_SERVER_DISCONNECTED`,
   There is still no idle timeout, so keepalive is the only thing bounding a
   peer that dies without sending FIN.
 
+## Client half-close (#53)
+
+A client that finished its handshake and then disconnected against a backend
+that had not closed put the worker on a full core indefinitely. Once the last
+of the client's data had gone to the backend, `PS_CLIENT_DISCONNECTED` reissued
+`shutdown(SHUT_WR)` on a descriptor it had already shut down, read `EAGAIN` and
+went back to `epoll_wait()`, which reported the same writability again at once,
+since a socket we will never write to again stays writable forever. Nothing
+consumed the readiness and nothing deregistered the descriptor, so the proxy
+was never released either, which is what made the shutdown hang in #41
+permanent once it happened.
+
+The flush and the read are separate states now. `PS_CLIENT_DISCONNECTED` ends
+when the queue to the backend empties, at which point the backend leg is
+re-registered for `EPOLLIN` alone and the proxy moves to `PS_SERVER_FLUSHED`,
+which reads the backend until it EOFs. No assert was involved, so Debug and
+Release behaved identically.
+
 ## Logging (#27)
 
 - `_write_linebuf()` returned still holding the write lock when the ring buffer

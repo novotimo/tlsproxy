@@ -31,6 +31,14 @@ typedef enum proxy_state_e {
     PS_SERVER_CONNECTING, /**< @brief Client is connected, serv connect request
                            * pending */
     PS_READY, /**< @brief Both client and server are ready to rumble */
+
+    /* Right now there are two timeout types, a connect timeout and a
+     * shutdown timeout. If the state is earlier than this comment, it's
+     * treated as a connect timeout, and if the state is later (starting
+     * with SERVER_DISCONNECTED), it's treated as a shutdown timeout.
+     * If you want to make a new type of timeout, edit proxy_handle_timeout()
+     */
+
     PS_SERVER_DISCONNECTED, /**< @brief Server disconnected, pending client
                              * disconnect (it needs to await SSL_shutdown) */
     PS_CLIENT_FLUSHED, /**< @brief All pending data has been flushed to the
@@ -38,8 +46,12 @@ typedef enum proxy_state_e {
     PS_CLOSE_NOTIFY_SENT, /**< @brief We've sent our close_notify, so all we
                            * need to do is set our linger timer and wait for the
                            * client to die so we can gracefully shut down */
-    PS_CLIENT_DISCONNECTED /**< @brief Client disconnected, can just destruct
-                            * the proxy and close sockets */
+    PS_CLIENT_DISCONNECTED, /**< @brief Client disconnected, so what it already
+                             * sent still has to reach the server before we
+                             * half-close that leg */
+    PS_SERVER_FLUSHED /**< @brief All pending data has been flushed to the
+                       * server and our FIN is sent, so the only thing left is
+                       * to read what the server still owes the client */
 } proxy_state_t;
 
 typedef struct listen_s listen_t;

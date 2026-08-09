@@ -242,6 +242,7 @@ void proxy_close(proxy_t *proxy, int epollfd) {
                   NULL);
         break;
     case PS_CLIENT_DISCONNECTED:
+    case PS_SERVER_FLUSHED:
         log_proxy(LL_DEBUG, proxy, "server_disconnect", "Other side disconnect",
                   NULL);
         break;
@@ -341,6 +342,7 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
     case PS_CLIENT_FLUSHED:
     case PS_CLOSE_NOTIFY_SENT:
     case PS_CLIENT_DISCONNECTED:
+    case PS_SERVER_FLUSHED:
         break;
     default:
         log_system_err(LL_ERROR, "Event queue corrupted: unexpected state",
@@ -370,15 +372,35 @@ tpx_err_t handle_proxy(proxy_t *proxy, int epollfd, uint32_t events,
             return TPX_CLOSED;
         }
 
-        // If we're finished flushing, shut down the server
-        if (outbuf_empty(proxy, 0))
-            shutdown(proxy->serv_fd, SHUT_WR);
+        if (!outbuf_empty(proxy, 0))
+            return TPX_SUCCESS;
+
+        // If we're finished flushing, shut down the server and stop waiting
+        // for write availability
+        shutdown(proxy->serv_fd, SHUT_WR);
 
         // If we got a full client close rather than a half close
         if (!proxy->client_notified_close) {
             proxy_close(proxy, epollfd);
             return TPX_CLOSED;
         }
+
+        // Make the server fd read-only with its epoll events set to EPOLLIN
+        struct epoll_event ev;
+        ev.data.ptr = (void *)proxy;
+        ev.events = EPOLLIN | EPOLLET;
+        if (epoll_ctl(epollfd, EPOLL_CTL_MOD, proxy->serv_fd, &ev) == -1) {
+            log_system_err(LL_WARN,
+                           "Failure making server fd read-only",
+                           TPX_ERR_ERRNO);
+            proxy_close(proxy, epollfd);
+            return TPX_CLOSED;
+        }
+
+        proxy->state = PS_SERVER_FLUSHED;
+
+        __attribute__((fallthrough));
+    case PS_SERVER_FLUSHED:
 
         ret = proxy_handle_read(proxy, 0);
         if (ret == TPX_SUCCESS)

@@ -948,22 +948,88 @@ static void handle_proxy_closes_when_the_client_is_gone(void **state) {
 
 /* With the flag, the client merely half-closed: it will send no more but is
    still reading, and the backend has not answered yet. Releasing here is what
-   the earlier revision did, and it delivered nothing. The proxy has to stay
-   alive, in this same state, pumping serv_fd -> s2c -> client until the
-   backend EOFs - PS_SERVER_DISCONNECTED's body never touches the server fd,
-   so advancing the state early loses the response. */
+   an earlier revision did, and it delivered nothing. The proxy has to stay
+   alive, pumping serv_fd -> s2c -> client until the backend EOFs -
+   PS_SERVER_DISCONNECTED's body never touches the server fd, so skipping ahead
+   to it loses the response. PS_SERVER_FLUSHED is the state that keeps reading
+   the backend, and re-entering PS_CLIENT_DISCONNECTED instead is what put the
+   worker in the shutdown()/read() spin of #53. */
 static void handle_proxy_keeps_pumping_after_a_client_half_close(void **st) {
     (void)st;
     proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
     p->hand_shaken = 1;
     p->client_notified_close = 1;
+    p->serv_fd = 43;
 
     // Backend has nothing to say yet.
     will_return(__wrap_read, -1);
     will_return(__wrap_read, EAGAIN);
 
-    assert_int_equal(handle_proxy(p, -1, EPOLLIN, TAG_CLIENT), TPX_SUCCESS);
+    assert_int_equal(handle_proxy(p, 7, EPOLLIN, TAG_CLIENT), TPX_SUCCESS);
+    assert_int_equal(p->state, PS_SERVER_FLUSHED);
+    assert_int_equal(close_log.calls, 0);
+
+    free_proxy(p);
+}
+
+/* Once the last byte the client sent is on its way to the backend there is
+   nothing left to write there, and the backend leg is registered EPOLLOUT, so
+   every writability edge came back to a handler that had nothing to do with
+   it. That is the readiness nothing consumed in #53. Re-registering for
+   EPOLLIN alone is what stops the wakeups; the pointer has to go back bare,
+   since bit 0 set would make handle_proxy() read it as the client leg. */
+static void client_half_close_stops_waiting_for_server_writability(void **st) {
+    (void)st;
+    proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
+    p->hand_shaken = 1;
+    p->client_notified_close = 1;
+    p->serv_fd = 43;
+
+    will_return(__wrap_read, -1);
+    will_return(__wrap_read, EAGAIN);
+
+    assert_int_equal(handle_proxy(p, 7, EPOLLOUT, TAG_SERVER), TPX_SUCCESS);
+
+    assert_int_equal(epoll_log.calls, 1);
+    assert_int_equal(epoll_log.op[0], EPOLL_CTL_MOD);
+    assert_int_equal(epoll_log.fd[0], 43);
+    assert_ptr_equal(epoll_log.ptr[0], p);
+    assert_int_equal(epoll_log.events[0] & (uint32_t)EPOLLOUT, 0);
+    assert_int_not_equal(epoll_log.events[0] & (uint32_t)EPOLLIN, 0);
+    assert_int_not_equal(epoll_log.events[0] & (uint32_t)EPOLLET, 0);
+
+    free_proxy(p);
+}
+
+/* A client that half-closes on the back of an upload the backend has not
+   finished taking leaves c2s non-empty, and the flush then needs the writable
+   edges that the case above deregisters. Returning to epoll and waiting for
+   the next one is the whole of the work here: the shutdown, the
+   re-registration and the read all belong to the pass that empties the queue.
+   Leaving the switch instead reaches the assert(0) that closes handle_proxy(),
+   which aborts the worker in Debug and returns TPX_FAILURE into a caller that
+   only looks for TPX_CLOSED in Release. */
+static void client_half_close_keeps_flushing_a_partial_queue(void **st) {
+    (void)st;
+    proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
+    p->hand_shaken = 1;
+    p->client_notified_close = 1;
+    p->serv_fd = 43;
+
+    assert_int_equal(enqueue(p->c2s, chunk(64, "half an upload"), 64),
+                     TPX_SUCCESS);
+    p->c2s->write_idx = 14;
+
+    // The backend takes four bytes and then blocks.
+    will_return(__wrap_send, 4);
+    will_return(__wrap_send, 0);
+    will_return(__wrap_send, -1);
+    will_return(__wrap_send, EAGAIN);
+
+    assert_int_equal(handle_proxy(p, 7, EPOLLOUT, TAG_SERVER), TPX_SUCCESS);
     assert_int_equal(p->state, PS_CLIENT_DISCONNECTED);
+    assert_int_equal(p->c2s->read_idx, 4);
+    assert_int_equal(epoll_log.calls, 0);
     assert_int_equal(close_log.calls, 0);
 
     free_proxy(p);
@@ -1548,6 +1614,12 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(
             handle_proxy_keeps_pumping_after_a_client_half_close,
+            reset_recorders),
+        cmocka_unit_test_setup(
+            client_half_close_stops_waiting_for_server_writability,
+            reset_recorders),
+        cmocka_unit_test_setup(
+            client_half_close_keeps_flushing_a_partial_queue,
             reset_recorders),
         cmocka_unit_test_setup(
             handle_proxy_ignores_server_events_while_shutting_down,
