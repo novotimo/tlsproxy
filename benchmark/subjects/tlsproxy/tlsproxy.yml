@@ -1,0 +1,16 @@
+## An absent logfile disables the logger, which is the logging-off setting all
+## three subjects run under for the headline. Groups, ciphersuites and the
+## version range are not configurable here (#44), so the client pins them.
+nworkers: 4
+
+listeners:
+  - name: bench
+    target-ip: backend
+    target-port: 80
+    connect-timeout: 5
+
+    listen-ip: 0.0.0.0
+    listen-port: 8443
+
+    cert-chain: /etc/certs/chain.crt
+    servkey: /etc/certs/leaf.key
