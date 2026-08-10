@@ -61,11 +61,23 @@ typedef struct linebuf_s {
     } u;
 } linebuf_t;
 
+// What ERR_print_errors_cb() carries in its void *u, copied for the same
+// reason as linebuf_t above
+typedef struct linebuf_cb_ctx_s {
+    linebuf_t *buf;
+    uint8_t   truncated;
+} linebuf_cb_ctx_t;
+
+#define TPX_TRUNC_CLOSE "...\""
+
 int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len, int mode);
 int _linebuf_putc(linebuf_t *linebuf, const char c);
 int _linebuf_append_kv(linebuf_t *linebuf, const char *key, const char *value,
                        size_t value_len);
-int _linebuf_append_ossl(linebuf_t *linebuf);
+int _linebuf_append_reserve(linebuf_t *linebuf, const char *str, size_t len,
+                            int mode, size_t reserved_bytes);
+int _linebuf_append_ossl(linebuf_t *linebuf, const char *key, size_t key_len);
+int _linebuf_append_cb(const char *str, size_t len, void *u);
 int _base_schema(linebuf_t *linebuf, int is_master, loglevel_t level,
                  const char *event);
 int _sanitize_c(const char c, char **outptr, const char *endptr);
@@ -531,6 +543,211 @@ static void linebuf_append_stays_inside_the_buffer_in_plain_mode(
     memset(big, 'a', sizeof(big));
 
     assert_int_equal(_linebuf_append(lb, big, sizeof(big), TPX_MODE_NONE), -1);
+}
+
+
+/* ------------------------------------------------------------------ *
+ * The OpenSSL error queue
+ *
+ * ERR_print_errors_cb() pops one entry per iteration and stops as soon as the
+ * callback returns anything <= 0, and it is the only thing that pops them, so
+ * a report that stops early leaves the rest queued. The queue is per-thread
+ * and the master never clears it, so an entry left behind comes out attached
+ * to whatever fails next. The callback therefore answers positive whatever
+ * happens and records a line it could not fit in its context instead.
+ * ------------------------------------------------------------------ */
+
+// How many error entries a rendered line carries: ossl_err_string_int() writes
+// ":error:%08lX" once per entry and the sanitiser leaves both bytes alone.
+static int rendered_entries(const char *line) {
+    int n = 0;
+    for (const char *p = line; (p = strstr(p, ":error:")) != NULL; ++p) ++n;
+    return n;
+}
+
+static int queued_entries(void) {
+    int n = 0;
+    while (ERR_get_error() != 0) ++n;
+    return n;
+}
+
+// The field as it stands in the buffer, NUL-terminated for strstr and friends.
+static const char *ossl_field(linebuf_t *lb) {
+    lb->u.buf[lb->u.len] = '\0';
+    return &lb->u.buf[LINEBUF_OFFSET];
+}
+
+/* The last bytes of the line, whatever offset the line was started at. A test
+   that pre-fills the buffer to sit near the ceiling has its field written at
+   that offset, not at LINEBUF_OFFSET, so this cannot go through strlen. */
+static void assert_line_ends_with(linebuf_t *lb, const char *needle) {
+    size_t n = strlen(needle);
+    if (lb->u.len < LINEBUF_OFFSET + n
+        || memcmp(&lb->u.buf[lb->u.len - n], needle, n) != 0)
+        fail_msg("expected <%s> at the end of a line of %u bytes",
+                 needle, lb->u.len);
+}
+
+/* One failed read of an encrypted key queues four entries, and the one that
+   names the cause is not the first. Rendering only the first is what makes a
+   wrong passphrase read as "bad decrypt". */
+static void append_ossl_renders_every_entry_in_the_queue(void **state) {
+    (void)state;
+    linebuf_t lb;
+    lb.u.len = LINEBUF_OFFSET;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), 0);
+    assert_int_equal(rendered_entries(ossl_field(&lb)), 4);
+}
+
+/* The whole field is this function's now, key and both quotes, so that the
+   room the closing quote needs is reserved by the same code that spends it. */
+static void append_ossl_writes_a_closed_field_around_the_report(void **state) {
+    (void)state;
+    linebuf_t lb;
+    lb.u.len = LINEBUF_OFFSET;
+    ERR_raise(ERR_LIB_SSL, 1);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), 0);
+    const char *field = ossl_field(&lb);
+    assert_int_equal(strncmp(field, " error_desc=\"", 13), 0);
+    assert_line_ends_with(&lb, "\"");
+    assert_not_contains(field, TPX_TRUNC_CLOSE);
+}
+
+static void append_ossl_leaves_nothing_queued_behind_it(void **state) {
+    (void)state;
+    linebuf_t lb;
+    lb.u.len = LINEBUF_OFFSET;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), 0);
+    assert_int_equal(queued_entries(), 0);
+}
+
+/* A line with no room left is the case that used to leave entries behind, and
+   the next failure was labelled with them. Running out of room stops the text
+   going in, not the popping. */
+static void append_ossl_drains_a_queue_it_could_not_fit(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 64;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), 0);
+    assert_int_equal(queued_entries(), 0);
+}
+
+/* A truncated report is closed with an ellipsis, so a reader can tell a report
+   that ran out of line from one that had nothing more to say. The four bytes
+   it takes are reserved before the report starts rather than found after. */
+static void append_ossl_marks_a_report_it_had_to_cut_short(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 64;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), 0);
+    assert_true(lb.u.len <= TPX_LOG_LINE_MAX);
+    assert_line_ends_with(&lb, TPX_TRUNC_CLOSE);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
+/* A line with no room for the shortest field this can write, the key plus
+   ="" plus the ellipsis, is left untouched rather than opened and abandoned,
+   since _log_system_err()'s caller writes the line whatever the helper
+   returns and an opened field would ship without its closing quote. */
+static void append_ossl_writes_nothing_when_the_field_will_not_fit(
+    void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 8;
+    ERR_raise(ERR_LIB_SSL, 1);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), -1);
+    assert_int_equal(lb.u.len, TPX_LOG_LINE_MAX - 8);
+}
+
+/* Giving up before the report starts is still a report that never ran, and
+   ERR_print_errors_cb() is the only thing that pops the queue, so the entries
+   survive into whatever fails next. This is the defect the rest of the
+   section is about, reached by the one path that returns early. */
+static void append_ossl_drains_the_queue_even_when_it_gives_up(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 8;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb, " error_desc",
+                                          sizeof(" error_desc")-1), -1);
+    assert_int_equal(queued_entries(), 0);
+}
+
+/* ERR_print_errors_cb() aborts on anything <= 0, and aborting is what leaves
+   the queue dirty, so the callback answers positive on the full line as well
+   as on the one it wrote. */
+static void append_cb_answers_positive_even_when_it_cannot_write(
+    void **state) {
+    (void)state;
+    static linebuf_t lb;
+    linebuf_cb_ctx_t ctx = { .buf = &lb, .truncated = 0 };
+
+    lb.u.len = LINEBUF_OFFSET;
+    assert_true(_linebuf_append_cb("abc", 3, &ctx) > 0);
+
+    lb.u.len = TPX_LOG_LINE_MAX;
+    assert_true(_linebuf_append_cb("abc", 3, &ctx) > 0);
+}
+
+// The context is what carries the failure out, since the return value no
+// longer can.
+static void append_cb_records_the_entry_it_could_not_fit(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    linebuf_cb_ctx_t ctx = { .buf = &lb, .truncated = 0 };
+
+    lb.u.len = LINEBUF_OFFSET;
+    assert_int_equal(_linebuf_append_cb("abc", 3, &ctx), 1);
+    assert_int_equal(ctx.truncated, 0);
+
+    lb.u.len = TPX_LOG_LINE_MAX;
+    assert_int_equal(_linebuf_append_cb("abc", 3, &ctx), 1);
+    assert_int_equal(ctx.truncated, 1);
+}
+
+/* Once one entry has been cut the rest are popped and dropped rather than
+   appended, or the field would carry the tail of the report without its
+   middle and read as if nothing were missing. */
+static void append_cb_writes_nothing_more_once_it_has_truncated(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    linebuf_cb_ctx_t ctx = { .buf = &lb, .truncated = 1 };
+    lb.u.len = LINEBUF_OFFSET;
+
+    assert_true(_linebuf_append_cb("abc", 3, &ctx) > 0);
+    assert_int_equal(lb.u.len, LINEBUF_OFFSET);
+}
+
+/* What makes the closing quote safe to write afterwards: the reservation is
+   taken off the ceiling the sanitiser measures against, so it survives a value
+   that would otherwise have filled the line exactly. */
+static void append_reserve_keeps_its_reservation_free(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 16;
+
+    char big[64];
+    memset(big, 'a', sizeof(big));
+    assert_int_equal(_linebuf_append_reserve(&lb, big, sizeof(big),
+                                             TPX_MODE_SANITIZE, 4), -1);
+    assert_true(lb.u.len <= TPX_LOG_LINE_MAX - 4);
 }
 
 
@@ -1618,6 +1835,19 @@ int main(void) {
         T(base_schema_writes_the_fields_every_line_starts_with),
         T(base_schema_marks_a_master_line_as_master),
         T(strlevel_names_every_level),
+
+        // The OpenSSL error queue
+        T(append_ossl_renders_every_entry_in_the_queue),
+        T(append_ossl_writes_a_closed_field_around_the_report),
+        T(append_ossl_leaves_nothing_queued_behind_it),
+        T(append_ossl_drains_a_queue_it_could_not_fit),
+        T(append_ossl_marks_a_report_it_had_to_cut_short),
+        T(append_ossl_writes_nothing_when_the_field_will_not_fit),
+        T(append_ossl_drains_the_queue_even_when_it_gives_up),
+        T(append_cb_answers_positive_even_when_it_cannot_write),
+        T(append_cb_records_the_entry_it_could_not_fit),
+        T(append_cb_writes_nothing_more_once_it_has_truncated),
+        T(append_reserve_keeps_its_reservation_free),
 
         // The ring buffer
         T(ringbuf_fits_accepts_a_message_that_has_room),
