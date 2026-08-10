@@ -57,12 +57,18 @@ inits() {
     grep -c "shared_mutex_init pid=$MASTER " "$RUN/stderr.txt"
 }
 
+# The sanitizer runtime has to be first in the initial library list, and a
+# preloaded probe would otherwise come before it, so under an ASAN build the
+# probe is preloaded behind libasan rather than on its own.
+ASAN_LIB=$(ldd "$BIN" | awk '/libasan/ {print $3}')
+PRELOAD=${ASAN_LIB:+$ASAN_LIB:}$PROBE
+
 start_proxy() {
     for try in 0 1 2 3 4 5 6 7 8 9; do
         PORT=$(( 20000 + ($$ + try * 97) % 20000 ))
         rm -f "$LOG"
         write_config "$PORT" "$CERTS/servkey.pem"
-        ( cd "$RUN" && LD_PRELOAD=$PROBE exec "$BIN" tlsproxy.yml ) \
+        ( cd "$RUN" && LD_PRELOAD=$PRELOAD exec "$BIN" tlsproxy.yml ) \
             >"$RUN/stdout.txt" 2>"$RUN/stderr.txt" &
         MASTER=$!
         for _ in $(seq 50); do
