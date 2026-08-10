@@ -749,9 +749,13 @@ int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     }
     
     if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
+        EVP_PKEY_free(pkey);
         _fatal(logfd, "Failed to load server key into ctx", TPX_ERR_OSSL);
         return 0;
     }
+
+    // Our pkey is refcounted, so we should relinquish ownership
+    EVP_PKEY_free(pkey);
     return 1;
 }
 
