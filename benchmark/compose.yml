@@ -1,104 +1,175 @@
-version: '3'
+## Subject host stack. The backend is shared by every test; the subjects are
+## brought up one at a time by run.sh so that only one holds the cpuset.
+##
+## cpuset rather than a cpus quota: CFS bandwidth control throttles for the
+## remainder of a 100ms period once the quota is spent, which lands in the
+## latency percentiles as an artefact of the cgroup. Pinning to whole physical
+## cores (siblings n and n+8 on this host) bounds the subject without that.
+##
+## Every subject needs its own sysctls block. A container gets a fresh network
+## namespace, which takes the kernel defaults and not the host's tuning, and
+## the subjects open a backend connection per client connection and send the
+## FIN first, so the default 28,232 ephemeral ports over a 60s TIME_WAIT would
+## cap all three at about 470 backend connections a second.
+
+x-subject-sysctls: &subject-sysctls
+  net.ipv4.ip_local_port_range: "1024 65535"
+  net.ipv4.tcp_tw_reuse: "1"
+  net.ipv4.tcp_max_tw_buckets: "2000000"
+  net.core.somaxconn: "65535"
+  net.ipv4.tcp_max_syn_backlog: "65535"
+
+x-subject-limits: &subject-limits
+  cpuset: "0-3,8-11"
+  mem_limit: 8g
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
+
 services:
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    ports:
-      - 9090:9090
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: cadvisor
-    ports:
-      - 8080:8080
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:rw
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: node-exporter
-    ports:
-      - 9100:9100
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    ports:
-      - 3000:3000
-    volumes:
-      - grafana_data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-
-  web:
-    hostname: nginx-web
-    image: nginx:latest
-    networks:
-      - proxy-demo
-
-  tlsproxy:
-    image: tlsproxy:latest
-    networks:
-      - proxy-demo
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    volumes:
-      - type: bind
-        source: ../example-docker/config
-        target: /etc/tlsproxy
-      - type: bind
-        source: ../example-docker/logs
-        target: /var/log/tlsproxy
-    ports:
-      - 10001:443
-
-  tlsterminator:
+  backend:
     image: nginx:1.29.4-alpine
+    hostname: backend
     networks:
-      - proxy-demo
-    cap_drop:
-      - ALL
+      bench:
+        aliases: [backend]
+    cpuset: "4,5,12,13"
+    mem_limit: 1g
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
     volumes:
-      - type: bind
-        source: ./nginx/ssl
-        target: /etc/nginx/ssl
-      - type: bind
-        source: ${PWD}/nginx/nginx.conf
-        target: /etc/nginx/nginx.conf
-      - type: bind
-        source: ${PWD}/nginx/server.conf
-        target: /etc/nginx/server.conf
-      - type: bind
-        source: /tmp/nginx
-        target: /tmp
+      - ./backend/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend/payload:/payload:ro
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
     ports:
-      - 10002:8443
-    user: 1000:1000
+      - "8080:80"
 
-volumes:
-  prometheus_data: {}
-  grafana_data: {}
-  
+  ## Selected instead of `backend` for tests where the client sends no
+  ## application data. It never times out, so it cannot close a connection the
+  ## proxy still holds, and it carries the `backend` alias so subject configs
+  ## do not change between backends.
+  backend-sink:
+    profiles: [sink]
+    build:
+      context: ./backend/sink
+    image: bench-sink:latest
+    hostname: backend
+    networks:
+      bench:
+        aliases: [backend]
+    command: ["-p", "80", "-w", "2"]
+    cpuset: "4,5,12,13"
+    mem_limit: 1g
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
+    ## Published only so run.sh can tell when it is ready; the subjects reach
+    ## it over the bench network.
+    ports:
+      - "8081:80"
+
+  ## The same sink in echo mode, for the bulk data-path test.
+  backend-echo:
+    profiles: [sink]
+    build:
+      context: ./backend/sink
+    image: bench-sink:latest
+    hostname: backend
+    networks:
+      bench:
+        aliases: [backend]
+    command: ["-p", "80", "-w", "2", "-e"]
+    cpuset: "4,5,12,13"
+    mem_limit: 1g
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
+    ports:
+      - "8082:80"
+
+  ## CERT picks which leaf every subject serves: ecdsa (default) or rsa.
+  tlsproxy:
+    profiles: [tlsproxy]
+    build:
+      context: ..
+      dockerfile: benchmark/subjects/tlsproxy/Dockerfile
+    image: tlsproxy:bench-deb
+    networks: [bench]
+    <<: *subject-limits
+    sysctls: *subject-sysctls
+    read_only: true
+    ## Workaround, not a tuning knob: every worker exits at once when the
+    ## master is PID 1, because app/main.c:main() reads getppid() == 1 as "the
+    ## master died and init adopted me". tini takes PID 1 so the master is not
+    ## it. Remove once that is fixed.
+    init: true
+    volumes:
+      - ./subjects/tlsproxy:/etc/tlsproxy:ro
+      - ./certs/${CERT:-ecdsa}:/etc/certs:ro
+    ports:
+      - "8443:8443"
+
+  nginx-stream:
+    profiles: [nginx-stream]
+    build:
+      context: ./subjects/nginx
+    image: nginx:bench
+    networks: [bench]
+    <<: *subject-limits
+    sysctls: *subject-sysctls
+    volumes:
+      - ./subjects/nginx/stream/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs/${CERT:-ecdsa}:/etc/certs:ro
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+    ports:
+      - "8443:8443"
+
+  ## Diagnostic, not a subject: nginx terminating TLS with no upstream, used to
+  ## separate TLS handling from the stream proxy path.
+  nginx-tlsonly:
+    profiles: [nginx-tlsonly]
+    image: nginx:bench
+    networks: [bench]
+    <<: *subject-limits
+    sysctls: *subject-sysctls
+    volumes:
+      - ./subjects/nginx/tlsonly/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs/${CERT:-ecdsa}:/etc/certs:ro
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+    ports:
+      - "8443:8443"
+
+  haproxy-tcp:
+    profiles: [haproxy-tcp]
+    image: haproxy:3.2.22
+    networks: [bench]
+    <<: *subject-limits
+    sysctls: *subject-sysctls
+    volumes:
+      - ./subjects/haproxy/tcp:/usr/local/etc/haproxy:ro
+      - ./certs/${CERT:-ecdsa}:/etc/certs:ro
+    ports:
+      - "8443:8443"
+
 networks:
-  proxy-demo: {}
+  bench:

@@ -1,0 +1,70 @@
+run              20260809T230607Z
+tlsproxy_sha     6e847f2
+mode             handshake
+axis             64 256 1024 4096
+backend          backend-sink
+subject_ip       10.99.0.1
+generator        root@10.99.0.2
+group            X25519
+cipher           TLS_AES_256_GCM_SHA384
+tls_version      1.3
+resumption       0
+duration_s       10
+reps             6
+threads          4
+--- subject host ---
+role                             subject
+host                             Linux 6.18.41-gentoo-dist x86_64
+net.ipv4.ip_local_port_range     32768 60999
+net.ipv4.tcp_tw_reuse            2
+net.ipv4.tcp_max_tw_buckets      131072
+net.core.somaxconn               65535
+net.ipv4.tcp_max_syn_backlog     65535
+net.core.rmem_max                16777216
+net.core.wmem_max                16777216
+net.core.netdev_max_backlog      16384
+net.netfilter.nf_conntrack_max   1048576
+net.netfilter.nf_conntrack_count 11
+net.netfilter.nf_conntrack_tcp_timeout_time_wait 30
+nofile soft/hard                 4096/4096
+fs.nr_open                       1048576
+iface                            enp0s31f6
+iface.speed                      1000
+iface.duplex                     full
+iface.mtu                        1500
+cpu.governor                     performance
+cpu.no_turbo                     1
+cpu.throttle_count               1818
+--- generator host ---
+role                             generator
+host                             Linux 6.18.38 x86_64
+net.ipv4.ip_local_port_range     1024 65535
+net.ipv4.tcp_tw_reuse            1
+net.ipv4.tcp_max_tw_buckets      2000000
+net.core.somaxconn               4096
+net.ipv4.tcp_max_syn_backlog     4096
+net.core.rmem_max                16777216
+net.core.wmem_max                16777216
+net.core.netdev_max_backlog      16384
+nofile soft/hard                 1024/4096
+fs.nr_open                       1048576
+iface                            enp4s0
+iface.speed                      1000
+iface.duplex                     full
+iface.mtu                        1500
+iface.offloads                   rx-checksumming:on tx-checksumming:on tcp-segmentation-offload:on generic-segmentation-offload:on generic-receive-offload:on 
+iface.coalesce                   
+iface.ring                       256/256/256/256
+--- generators ---
+tls-perf   4cf96f4d1800837ae077a3bc3df4a901bc2ff405
+wrk2       44a94c17d8e6a0bac8559b53da76848e430cb7a7
+tlsload    6e847f2
+march      x86-64-v2
+build-host Linux 6.18.41-gentoo-dist x86_64, g++ (Gentoo 15.3.0 p8) 15.3.0
+tls-perf   min GLIBC_2.38, needs libssl.so.3 libcrypto.so.3 libstdc++.so.6 libm.so.6 libgcc_s.so.1 libc.so.6 
+wrk        min GLIBC_2.38, needs libm.so.6 libcrypto.so.3 libssl.so.3 libgcc_s.so.1 libc.so.6 
+tlsload    min GLIBC_2.38, needs libssl.so.3 libcrypto.so.3 libm.so.6 libc.so.6 
+--- subject images ---
+nginx:bench            debian 13 libssl3=3.5.6-1~deb13u2
+haproxy:3.2.22         debian 13 libssl3=3.5.6-1~deb13u2
+tlsproxy:bench-deb     debian 13 libssl3=3.5.6-1~deb13u2
