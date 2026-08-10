@@ -36,6 +36,15 @@
 #define TPX_TRUNC_RESERVED (sizeof(TPX_TRUNC_CLOSE)-1)
 
 
+// This exists to assert that any nonzero response is a programmer
+// error, but this still evaluates the argument in a release build
+#ifndef NDEBUG
+#define ASSERT_OK(call) ((void)call)
+#else
+#define ASSERT_OK(call) assert(call == 0)
+#endif
+
+
 typedef struct linebuf_s {
     union {
         uint32_t len;
@@ -810,13 +819,9 @@ int _linebuf_append_ossl(linebuf_t *linebuf, const char *key, size_t key_len) {
     }
 
     // We've shown that there's enough room for these
-    int ret;
-    ret = _linebuf_append(linebuf, key, key_len, TPX_MODE_NONE);
-    assert(ret == 0);
-    ret = _linebuf_putc(linebuf, '=');
-    assert(ret == 0);
-    ret = _linebuf_putc(linebuf, '"');
-    assert(ret == 0);
+    ASSERT_OK(_linebuf_append(linebuf, key, key_len, TPX_MODE_NONE));
+    ASSERT_OK(_linebuf_putc(linebuf, '='));
+    ASSERT_OK(_linebuf_putc(linebuf, '"'));
 
     linebuf_cb_ctx_t ctx;
     ctx.buf = linebuf;
@@ -824,31 +829,35 @@ int _linebuf_append_ossl(linebuf_t *linebuf, const char *key, size_t key_len) {
 
     ERR_print_errors_cb(_linebuf_append_cb, (void *)&ctx);
     if (ctx.truncated) {
-        ret = _linebuf_append(linebuf,
-                              TPX_TRUNC_CLOSE, TPX_TRUNC_RESERVED,
-                              TPX_MODE_NONE);
-        assert(ret == 0);
+        ASSERT_OK(_linebuf_append(linebuf,
+                                  TPX_TRUNC_CLOSE, TPX_TRUNC_RESERVED,
+                                  TPX_MODE_NONE));
     } else {
-        ret = _linebuf_putc(linebuf, '"');
-        assert(ret == 0);
+        ASSERT_OK(_linebuf_putc(linebuf, '"'));
     }
-    (void)ret;
 
     return 0;
 }
 
 int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
                        const char *value, size_t value_len) {
+    // It's better if we just give up if we can't fit even a truncated
+    // value of length 0 in
+    if (linebuf->u.len + strlen(key) + (sizeof("=\"")-1) + TPX_TRUNC_RESERVED
+        > TPX_LOG_LINE_MAX) {
+        ERR_clear_error();
+        return -1;
+    }
+
     assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
 
-    GUARD_APPEND_(_linebuf_append(linebuf, key, strlen(key), TPX_MODE_NONE));
+    ASSERT_OK(_linebuf_append(linebuf, key, strlen(key), TPX_MODE_NONE));
 
     // If this errors the next will too
-    GUARD_APPEND_(_linebuf_putc(linebuf, '='));
-    GUARD_APPEND_(_linebuf_putc(linebuf, '"'));
-    GUARD_APPEND_(_linebuf_append(linebuf, value, value_len,
-                      TPX_MODE_SANITIZE));
-    GUARD_APPEND_(_linebuf_putc(linebuf, '"'));
+    ASSERT_OK(_linebuf_putc(linebuf, '='));
+    ASSERT_OK(_linebuf_putc(linebuf, '"'));
+    ASSERT_OK(_linebuf_append(linebuf, value, value_len, TPX_MODE_SANITIZE));
+    ASSERT_OK(_linebuf_putc(linebuf, '"'));
 
     assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
     return 0;
