@@ -267,6 +267,20 @@ default `tcp_syn_retries` of 6.
   positive on a successful append now and keeps answering 0 when the line is
   full, which is the case that wants the report stopped.
 
+## Self-signed certificate chains (#68)
+
+- A listener whose `cert-chain` holds a server certificate with no issuer above
+  it starts, which is what `example/default.yml` has documented for that key
+  all along. `init_openssl()` passes
+  `SSL_BUILD_CHAIN_FLAG_UNTRUSTED | SSL_BUILD_CHAIN_FLAG_IGNORE_ERROR` on the
+  `cert-chain` path and then compared the return against 1, but
+  `SSL_CTX_build_cert_chain()` answers 2 for a chain built with errors ignored,
+  which is reachable only because we asked for the errors to be ignored. Only
+  a chain of one is affected, since the chain left over the leaf is what
+  carries the 2 out and a chain with an intermediate in it returns 1.
+- The 2 draws a WARN, since a chain the verifier could not complete is shorter
+  than the file it came from implied.
+
 ## Proxy lifecycle (#29)
 
 - `create_proxy()` freed the proxy, NULLed the pointer and then fell into

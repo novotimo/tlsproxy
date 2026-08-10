@@ -64,6 +64,12 @@ add_test(NAME integration_signals
                  ${TLSProxy_SOURCE_DIR}/example)
 set_tests_properties(integration_signals PROPERTIES TIMEOUT 60)
 
+add_test(NAME integration_selfsigned
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/selfsigned.sh
+                 $<TARGET_FILE:tlsproxy>
+                 ${TLSProxy_SOURCE_DIR}/example)
+set_tests_properties(integration_selfsigned PROPERTIES TIMEOUT 60)
+
 add_test(NAME integration_reload_fds
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/reload_fds.sh
                  $<TARGET_FILE:tlsproxy>
