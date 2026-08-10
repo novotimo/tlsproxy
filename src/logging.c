@@ -38,7 +38,7 @@
 
 // This exists to assert that any nonzero response is a programmer
 // error, but this still evaluates the argument in a release build
-#ifndef NDEBUG
+#ifdef NDEBUG
 #define ASSERT_OK(call) ((void)(call))
 #else
 #define ASSERT_OK(call) assert((call) == 0)
@@ -845,7 +845,6 @@ int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
     // value of length 0 in
     if (linebuf->u.len + strlen(key) + (sizeof("=\"")-1) + TPX_TRUNC_RESERVED
         > TPX_LOG_LINE_MAX) {
-        ERR_clear_error();
         return -1;
     }
 
@@ -856,8 +855,13 @@ int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
     // If this errors the next will too
     ASSERT_OK(_linebuf_putc(linebuf, '='));
     ASSERT_OK(_linebuf_putc(linebuf, '"'));
-    ASSERT_OK(_linebuf_append(linebuf, value, value_len, TPX_MODE_SANITIZE));
-    ASSERT_OK(_linebuf_putc(linebuf, '"'));
+    if (_linebuf_append_reserve(linebuf, value, value_len, TPX_MODE_SANITIZE,
+                                TPX_TRUNC_RESERVED) == -1)
+        ASSERT_OK(_linebuf_append(linebuf,
+                                  TPX_TRUNC_CLOSE, TPX_TRUNC_RESERVED,
+                                  TPX_MODE_NONE));
+    else
+        ASSERT_OK(_linebuf_putc(linebuf, '"'));
 
     assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
     return 0;
