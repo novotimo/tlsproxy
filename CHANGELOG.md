@@ -281,6 +281,17 @@ default `tcp_syn_retries` of 6.
 - The 2 draws a WARN, since a chain the verifier could not complete is shorter
   than the file it came from implied.
 
+## Workers when the master is PID 1 (#69)
+
+- A worker no longer reads `getppid() == 1` as "the master has died and init
+  has adopted me", since a master started as PID 1, which is what
+  `CMD ["tlsproxy"]` produces, makes that true of every worker at once. They
+  all exited, the master respawned them until it hit the restart limit, and
+  the container stopped with 77 before it could serve anything.
+- The branch that gives up on respawning writes to stderr as well as to the
+  log. A configuration with no `logfile` has the logger disabled, so that exit
+  previously took the process down with no output at all.
+
 ## Proxy lifecycle (#29)
 
 - `create_proxy()` freed the proxy, NULLed the pointer and then fell into
