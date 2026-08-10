@@ -56,6 +56,13 @@ nfds() {
     ls "/proc/$MASTER/fd" 2>/dev/null | wc -l
 }
 
+# Counting alone cannot tell a descriptor that was never opened from one that
+# was opened and then closed on top of an existing one, so the numbers are
+# compared as a set too.
+fdset() {
+    ls "/proc/$MASTER/fd" 2>/dev/null | sort -n | tr '\n' ' '
+}
+
 start_proxy() {
     for try in 0 1 2 3 4 5 6 7 8 9; do
         PORT=$(( 20000 + ($$ + try * 97) % 20000 ))
@@ -93,6 +100,7 @@ start_proxy || fail "could not start the proxy on any candidate port"
 echo "master $MASTER on port $PORT"
 
 before=$(nfds)
+beforeset=$(fdset)
 [ "$before" -gt 0 ] || fail "could not read /proc/$MASTER/fd"
 
 # clntkey.pem is a well formed key that is not the one in servcert.pem, so
@@ -113,6 +121,15 @@ after=$(nfds)
 [ "$after" -le "$before" ] \
     || fail "master held $before descriptors, then $after after $RELOADS \
 rejected reloads"
+
+# A rejected reload gives back the descriptor it opened and nothing else, so
+# every number the master held before it is still open afterwards. Losing one
+# is invisible to the count above, since it moves the same way a leak avoided
+# does.
+afterset=$(fdset)
+[ "$afterset" = "$beforeset" ] \
+    || fail "master held descriptors [$beforeset], then [$afterset] after \
+$RELOADS rejected reloads"
 
 onlog=$(ls -l "/proc/$MASTER/fd" | grep -c "$LOG")
 [ "$onlog" -eq 1 ] || fail "$onlog descriptors open on the log file, want 1"

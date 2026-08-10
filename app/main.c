@@ -782,16 +782,37 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
     }
 
     if (tpx_validate_conf(new_config, logfd) == TPX_FAILURE)
-        goto cleanup_conf;
+        goto failure;
 
-    uint8_t old_enabled = g_shmem->logger.enabled;
-    uint8_t old_loglevel = g_shmem->logger.loglevel;
-    int new_logfd = init_logger(new_config);
-    
+    int new_logfd = -1;
+    pid_t *new_pids = NULL;
+
+    for (size_t i=0; i<new_config->listeners_count; ++i) {
+        // We don't actually use this context we've made, we just want to
+        // prove that it will be made without errors
+        SSL_CTX *ssl_ctx = init_openssl(&new_config->listeners[i], *logfd);
+        if (!ssl_ctx) {
+            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
+                               "Couldn't initialize OpenSSL");
+            goto failure;
+        }
+        SSL_CTX_free(ssl_ctx);
+    }
+
+    // Do this before clearing our old config, because it can fail
+    new_pids = calloc((*config)->nworkers, sizeof(pid_t));
+    if (!new_pids) {
+        perror("Couldn't allocate PID list");
+        goto failure;
+    }
+
+    new_logfd = init_logger(new_config);
+
+    // We're mostly sure our config is good, so let's start up the new log
     if (new_logfd == -2) {
         log_system_err_m(*logfd, LL_ERROR, "Couldn't update logfile",
-                            TPX_ERR_ERRNO);
-        goto restore_shmem;
+                         TPX_ERR_ERRNO);
+        goto failure;
     } else if (new_logfd == -1) {
         g_shmem->logger.enabled = 0;
     } else {
@@ -802,26 +823,6 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
             g_shmem->logger.loglevel = LL_INFO;
     }
 
-
-    for (size_t i=0; i<new_config->listeners_count; ++i) {
-        // We don't actually use this context we've made, we just want to
-        // prove that it will be made without errors
-        SSL_CTX *ssl_ctx = init_openssl(&new_config->listeners[i], new_logfd);
-        if (!ssl_ctx) {
-            log_system_err_m_ex(*logfd, LL_ERROR, "Couldn't reload config",
-                               "Couldn't initialize OpenSSL");
-            goto restore_shmem;
-        }
-        SSL_CTX_free(ssl_ctx);
-    }
-
-    // Do this before clearing our old config, because it can fail
-    pid_t *new_pids = calloc((*config)->nworkers, sizeof(pid_t));
-    if (!new_pids) {
-        perror("Couldn't allocate PID list");
-        goto restore_shmem;
-    }
-
     // Now we're fully convinced our new config is good
     size_t old_workers = (*config)->nworkers;
     cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)*config, 0);
@@ -829,7 +830,6 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     *config = new_config;
     *logfd = new_logfd;
-
 
     for (size_t i=0; i<old_workers; ++i)
         kill_safe((*pids)[i], SIGHUP);
@@ -841,14 +841,8 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 
     return 1;
 
-restore_shmem:
-    g_shmem->logger.enabled = old_enabled;
-    g_shmem->logger.loglevel = old_loglevel;
-    // -1 is a config with no logfile and -2 an open() that failed, so
-    // neither of those has a descriptor to give back
-    if (new_logfd >= 0)
-        close(new_logfd);
-cleanup_conf:
+failure:
+    free(new_pids);
     cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)new_config, 0);
     return 0;
 }
