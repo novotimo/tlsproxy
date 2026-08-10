@@ -277,13 +277,13 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
-
     GUARD_APPEND(_base_schema(&linebuf, 1, level, STARTUP_EVENT));
 
     // If we can't fit the rest in even with argv truncated to nothing,
     // just give up on this message.
+    // We reserve 3 extra, so that the version isn't truncated
     const size_t reserved = TPX_TRUNC_RESERVED + sizeof(" version=\"")-1 +
-        sizeof(TLSPROXY_VERSION);
+        sizeof(TLSPROXY_VERSION) + 3;
     const size_t minlen = sizeof(" argv=\"")-1 + reserved;
 
     if (linebuf.u.len + minlen > TPX_LOG_LINE_MAX)
