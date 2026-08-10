@@ -665,9 +665,13 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
                       SSL_BUILD_CHAIN_FLAG_IGNORE_ERROR
                     : 0;
 
-    if (SSL_CTX_build_cert_chain(ctx, flags) != 1) {
+    int chain_ret = SSL_CTX_build_cert_chain(ctx, flags);
+    if (chain_ret == 0) {
         _fatal(logfd, "Failed to build cert chain", TPX_ERR_OSSL);
         goto cleanup_fail;
+    } else if (chain_ret == 2) {
+        // This is what happens if we built a cert chain with ignored errors
+        log_system_err_m_ex(logfd, LL_WARN, "Building cert chain", "Ignored cert errors");
     }
 
     if (load_servkey(config, ctx, logfd) == 0)
