@@ -39,9 +39,9 @@
 // This exists to assert that any nonzero response is a programmer
 // error, but this still evaluates the argument in a release build
 #ifndef NDEBUG
-#define ASSERT_OK(call) ((void)call)
+#define ASSERT_OK(call) ((void)(call))
 #else
-#define ASSERT_OK(call) assert(call == 0)
+#define ASSERT_OK(call) assert((call) == 0)
 #endif
 
 
