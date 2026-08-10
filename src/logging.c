@@ -277,20 +277,44 @@ void log_startup(int logfd, loglevel_t level, int argc, char *argv[]) {
     static linebuf_t linebuf;
     linebuf.u.len = LINEBUF_OFFSET;
 
-    GUARD_APPEND(_base_schema(&linebuf, 1, level, STARTUP_EVENT))
 
-    GUARD_APPEND(_linebuf_append(&linebuf, " argv=\"", sizeof(" argv=\"")-1,
+    GUARD_APPEND(_base_schema(&linebuf, 1, level, STARTUP_EVENT));
+
+    // If we can't fit the rest in even with argv truncated to nothing,
+    // just give up on this message.
+    const size_t reserved = TPX_TRUNC_RESERVED + sizeof(" version=\"")-1 +
+        sizeof(TLSPROXY_VERSION);
+    const size_t minlen = sizeof(" argv=\"")-1 + reserved;
+
+    if (linebuf.u.len + minlen > TPX_LOG_LINE_MAX)
+        // If this ever happens, the world is ending
+        errx(EXIT_FAILURE, "Couldn't write startup message, programmer error");
+
+
+    ASSERT_OK(_linebuf_append(&linebuf, " argv=\"", sizeof(" argv=\"")-1,
                      TPX_MODE_NONE));
 
-    for (int i=1; i<argc; ++i) {
-        GUARD_APPEND(_linebuf_append(&linebuf, argv[i], strlen(argv[i]),
-                                     TPX_MODE_SANITIZE));
-        if (i+1 < argc)
-            GUARD_APPEND(_linebuf_putc(&linebuf, ' '))
-    }
-    GUARD_APPEND(_linebuf_putc(&linebuf, '"'));
+    int truncated = 0;
+    for (int i=1; i<argc && !truncated; ++i) {
+        // We reserve reserved+1 if this isn't the last argument so
+        // that we'd have space for our separator ' '
+        truncated = _linebuf_append_reserve(&linebuf,
+                                            argv[i], strlen(argv[i]),
+                                            TPX_MODE_SANITIZE,
+                                            reserved + (i==argc-1 ? 0 : 1))
+            == -1;
 
-    GUARD_APPEND(_linebuf_append_kv(&linebuf, " version", TLSPROXY_VERSION,
+        if (i+1 < argc && !truncated)
+            ASSERT_OK(_linebuf_putc(&linebuf, ' '));
+    }
+    if (truncated)
+        ASSERT_OK(_linebuf_append(&linebuf,
+                                  TPX_TRUNC_CLOSE, TPX_TRUNC_RESERVED,
+                                  TPX_MODE_NONE));
+    else
+        ASSERT_OK(_linebuf_putc(&linebuf, '"'));
+
+    ASSERT_OK(_linebuf_append_kv(&linebuf, " version", TLSPROXY_VERSION,
                                     sizeof(TLSPROXY_VERSION)-1));
 
     _write_linebuf_fd(logfd, &linebuf);

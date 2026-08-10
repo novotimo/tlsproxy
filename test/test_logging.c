@@ -35,6 +35,7 @@
 #include "listen.h"
 #include "proxy.h"
 #include "shmem.h"
+#include "version.h"
 
 
 /* ------------------------------------------------------------------ *
@@ -1451,6 +1452,42 @@ static void log_startup_escapes_a_hostile_argument(void **state) {
     assert_not_contains(logtext, "\" event=\"forged");
 }
 
+/* argv is bounded by PATH_MAX in practice, but the sanitizer emits four bytes
+   for every byte over 127, so a long enough non-ASCII path passes the line
+   limit. That used to drop the startup record whole; it comes out cut and
+   marked now. */
+static void log_startup_truncates_an_argument_that_will_not_fit(void **state) {
+    (void)state;
+    static char arg[TPX_LOG_LINE_MAX + 64];
+    memset(arg, 'a', sizeof(arg) - 1);
+    arg[sizeof(arg) - 1] = '\0';
+    char *argv[] = {(char *)"tlsproxy", arg, NULL};
+
+    log_startup(logpipe[1], LL_INFO, 2, argv);
+    size_t n = read_logs();
+    assert_true(n > 0);
+    assert_true(n <= TPX_LOG_LINE_MAX + 1);
+
+    assert_contains(logtext, "event=startup");
+    assert_contains(logtext, TPX_TRUNC_CLOSE);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
+/* The reservation that truncation leaves behind exists so the fields after
+   argv still land, and version is the only one of them. */
+static void log_startup_keeps_the_version_when_argv_was_cut(void **state) {
+    (void)state;
+    static char arg[TPX_LOG_LINE_MAX + 64];
+    memset(arg, 'a', sizeof(arg) - 1);
+    arg[sizeof(arg) - 1] = '\0';
+    char *argv[] = {(char *)"tlsproxy", arg, NULL};
+
+    log_startup(logpipe[1], LL_INFO, 2, argv);
+    assert_true(read_logs() > 0);
+
+    assert_contains(logtext, " version=\"" TLSPROXY_VERSION "\"");
+}
+
 static void log_worker_reports_a_live_worker_as_alive(void **state) {
     (void)state;
     log_worker(logpipe[1], LL_WARN, TPX_WORKER_ALIVE, 31337, -1);
@@ -1936,6 +1973,8 @@ int main(void) {
         // Master schemas
         T(log_startup_records_the_command_line),
         T(log_startup_escapes_a_hostile_argument),
+        T(log_startup_truncates_an_argument_that_will_not_fit),
+        T(log_startup_keeps_the_version_when_argv_was_cut),
         T(log_worker_reports_a_live_worker_as_alive),
         T(log_worker_reports_a_dead_worker_as_dead),
         T(log_worker_records_the_exit_code),
