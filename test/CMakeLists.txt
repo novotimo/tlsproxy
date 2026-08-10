@@ -69,3 +69,16 @@ add_test(NAME integration_reload_fds
                  $<TARGET_FILE:tlsproxy>
                  ${TLSProxy_SOURCE_DIR}/example)
 set_tests_properties(integration_reload_fds PROPERTIES TIMEOUT 60)
+
+# A re-initialized mutex is indistinguishable from a fresh one from outside the
+# process, so this one counts pthread_mutex_init() calls through LD_PRELOAD.
+add_library(mutex_probe MODULE integration/mutex_probe.c)
+target_link_libraries(mutex_probe PRIVATE ${CMAKE_DL_LIBS})
+set_target_properties(mutex_probe PROPERTIES PREFIX "")
+
+add_test(NAME integration_reload_lock
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/reload_lock.sh
+                 $<TARGET_FILE:tlsproxy>
+                 ${TLSProxy_SOURCE_DIR}/example
+                 $<TARGET_FILE:mutex_probe>)
+set_tests_properties(integration_reload_lock PROPERTIES TIMEOUT 60)

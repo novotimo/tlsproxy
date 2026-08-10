@@ -164,6 +164,22 @@ int init_logger(tpx_config_t *config) {
                      S_IRUSR | S_IWUSR);
     if (logfd == -1)
         return -2;
+
+    // This is initialized before `enabled` is set, since if this was
+    // disabled before, between logger being enabled and the lock being
+    // initialized, a worker could see `enabled == 1` and try to use the
+    // uninitialized lock
+    if (!g_shmem->logger.lock_initialized) {
+        pthread_mutexattr_t attrs;
+        pthread_mutexattr_init(&attrs);
+        pthread_mutexattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
+        pthread_mutexattr_setrobust(&attrs, PTHREAD_MUTEX_ROBUST);
+        pthread_mutex_init(&g_shmem->logger.write_lock, &attrs);
+        pthread_mutexattr_destroy(&attrs);
+
+        g_shmem->logger.lock_initialized = 1;
+    }
+
     g_shmem->logger.enabled = 1;
     if (config->loglevel)
         g_shmem->logger.loglevel = *config->loglevel;
@@ -171,13 +187,7 @@ int init_logger(tpx_config_t *config) {
         g_shmem->logger.loglevel = LL_INFO;
 
     g_shmem->logger.droplines = 0;
-    
-    pthread_mutexattr_t attrs;
-    pthread_mutexattr_init(&attrs);
-    pthread_mutexattr_setpshared(&attrs, PTHREAD_PROCESS_SHARED);
-    pthread_mutexattr_setrobust(&attrs, PTHREAD_MUTEX_ROBUST);
-    pthread_mutex_init(&g_shmem->logger.write_lock, &attrs);
-    pthread_mutexattr_destroy(&attrs);
+
     return logfd;
 }
 
