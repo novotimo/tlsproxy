@@ -35,6 +35,7 @@
 #include "listen.h"
 #include "proxy.h"
 #include "shmem.h"
+#include "version.h"
 
 
 /* ------------------------------------------------------------------ *
@@ -238,6 +239,23 @@ static void assert_not_contains(const char *haystack, const char *needle) {
         fail_msg("did not expect <%s> in:\n%s", needle, haystack);
 }
 
+/* The last bytes of the line, whatever offset the line was started at. A test
+   that pre-fills the buffer to sit near the ceiling has its field written at
+   that offset, not at LINEBUF_OFFSET, so this cannot go through strlen. */
+static void assert_line_ends_with(linebuf_t *lb, const char *needle) {
+    size_t n = strlen(needle);
+    if (lb->u.len < LINEBUF_OFFSET + n
+        || memcmp(&lb->u.buf[lb->u.len - n], needle, n) != 0)
+        fail_msg("expected <%s> at the end of a line of %u bytes",
+                 needle, lb->u.len);
+}
+
+static int queued_entries(void) {
+    int n = 0;
+    while (ERR_get_error() != 0) ++n;
+    return n;
+}
+
 // Run one character through the sanitiser into a fresh, roomy buffer.
 static const char *sanitized(char c) {
     static char out[16];
@@ -357,6 +375,49 @@ static void kv_value_cannot_forge_a_second_field(void **state) {
     lb.u.buf[lb.u.len] = '\0';
 
     assert_not_contains(&lb.u.buf[LINEBUF_OFFSET], "\" level=\"FATAL");
+}
+
+/* A value longer than the room left is an ordinary runtime case, not a
+   programmer error: a certificate subject, a configured path and the cacerts
+   list are all unbounded. It comes out cut and marked, with the field still
+   closed, since the reservation is taken off the ceiling the value is
+   measured against. */
+static void kv_truncates_a_value_that_will_not_fit(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 200;
+
+    char big[512];
+    memset(big, 'a', sizeof(big));
+    assert_int_equal(_linebuf_append_kv(&lb, " cert_subject", big,
+                                        sizeof(big)), 0);
+    assert_true(lb.u.len <= TPX_LOG_LINE_MAX);
+    assert_line_ends_with(&lb, TPX_TRUNC_CLOSE);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
+/* Below that there is no field worth writing, so the line is left as it was
+   rather than carrying a key with nothing after it. */
+static void kv_gives_up_when_even_an_empty_value_will_not_fit(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 4;
+
+    assert_int_equal(_linebuf_append_kv(&lb, " cert_subject", "x", 1), -1);
+    assert_int_equal(lb.u.len, TPX_LOG_LINE_MAX - 4);
+}
+
+/* Giving up is not a reason to discard someone else's errors. _log_system_err()
+   writes error_msg through here before it renders error_desc from the queue, so
+   clearing on this path would delete the report the record exists to carry. */
+static void kv_leaves_the_openssl_queue_alone(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 4;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_kv(&lb, " error_msg", "x", 1), -1);
+    assert_int_equal(queued_entries(), 4);
 }
 
 
@@ -565,27 +626,10 @@ static int rendered_entries(const char *line) {
     return n;
 }
 
-static int queued_entries(void) {
-    int n = 0;
-    while (ERR_get_error() != 0) ++n;
-    return n;
-}
-
 // The field as it stands in the buffer, NUL-terminated for strstr and friends.
 static const char *ossl_field(linebuf_t *lb) {
     lb->u.buf[lb->u.len] = '\0';
     return &lb->u.buf[LINEBUF_OFFSET];
-}
-
-/* The last bytes of the line, whatever offset the line was started at. A test
-   that pre-fills the buffer to sit near the ceiling has its field written at
-   that offset, not at LINEBUF_OFFSET, so this cannot go through strlen. */
-static void assert_line_ends_with(linebuf_t *lb, const char *needle) {
-    size_t n = strlen(needle);
-    if (lb->u.len < LINEBUF_OFFSET + n
-        || memcmp(&lb->u.buf[lb->u.len - n], needle, n) != 0)
-        fail_msg("expected <%s> at the end of a line of %u bytes",
-                 needle, lb->u.len);
 }
 
 /* One failed read of an encrypted key queues four entries, and the one that
@@ -1408,6 +1452,42 @@ static void log_startup_escapes_a_hostile_argument(void **state) {
     assert_not_contains(logtext, "\" event=\"forged");
 }
 
+/* argv is bounded by PATH_MAX in practice, but the sanitizer emits four bytes
+   for every byte over 127, so a long enough non-ASCII path passes the line
+   limit. That used to drop the startup record whole; it comes out cut and
+   marked now. */
+static void log_startup_truncates_an_argument_that_will_not_fit(void **state) {
+    (void)state;
+    static char arg[TPX_LOG_LINE_MAX + 64];
+    memset(arg, 'a', sizeof(arg) - 1);
+    arg[sizeof(arg) - 1] = '\0';
+    char *argv[] = {(char *)"tlsproxy", arg, NULL};
+
+    log_startup(logpipe[1], LL_INFO, 2, argv);
+    size_t n = read_logs();
+    assert_true(n > 0);
+    assert_true(n <= TPX_LOG_LINE_MAX + 1);
+
+    assert_contains(logtext, "event=startup");
+    assert_contains(logtext, TPX_TRUNC_CLOSE);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
+/* The reservation that truncation leaves behind exists so the fields after
+   argv still land, and version is the only one of them. */
+static void log_startup_keeps_the_version_when_argv_was_cut(void **state) {
+    (void)state;
+    static char arg[TPX_LOG_LINE_MAX + 64];
+    memset(arg, 'a', sizeof(arg) - 1);
+    arg[sizeof(arg) - 1] = '\0';
+    char *argv[] = {(char *)"tlsproxy", arg, NULL};
+
+    log_startup(logpipe[1], LL_INFO, 2, argv);
+    assert_true(read_logs() > 0);
+
+    assert_contains(logtext, " version=\"" TLSPROXY_VERSION "\"");
+}
+
 static void log_worker_reports_a_live_worker_as_alive(void **state) {
     (void)state;
     log_worker(logpipe[1], LL_WARN, TPX_WORKER_ALIVE, 31337, -1);
@@ -1819,6 +1899,9 @@ int main(void) {
         T(sanitize_refuses_a_hex_escape_it_cannot_finish),
         T(kv_value_cannot_close_its_own_quotes),
         T(kv_value_cannot_forge_a_second_field),
+        T(kv_truncates_a_value_that_will_not_fit),
+        T(kv_gives_up_when_even_an_empty_value_will_not_fit),
+        T(kv_leaves_the_openssl_queue_alone),
 
         // The hex printer
         T(hex_prints_a_high_byte_without_sign_extension),
@@ -1890,6 +1973,8 @@ int main(void) {
         // Master schemas
         T(log_startup_records_the_command_line),
         T(log_startup_escapes_a_hostile_argument),
+        T(log_startup_truncates_an_argument_that_will_not_fit),
+        T(log_startup_keeps_the_version_when_argv_was_cut),
         T(log_worker_reports_a_live_worker_as_alive),
         T(log_worker_reports_a_dead_worker_as_dead),
         T(log_worker_records_the_exit_code),
