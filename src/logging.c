@@ -836,7 +836,9 @@ void _write_linebuf_fd(int logfd, linebuf_t *linebuf) {
 }
 
 int _linebuf_append_cb(const char *str, size_t len, void *u) {
-    return _linebuf_append((linebuf_t *)u, str, len, TPX_MODE_SANITIZE);
+    int ret = _linebuf_append((linebuf_t *)u, str, len, TPX_MODE_SANITIZE);
+    // For now, _linebuf_append only returns 0 or -1, with 0 being a success
+    return ret == 0;
 }
 
 void _write_linebuf(logger_t *logger, linebuf_t *line) {

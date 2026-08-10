@@ -241,6 +241,20 @@ default `tcp_syn_retries` of 6.
   `MAP_ANONYMOUS` zeroes for us, now holds the initialization to the once it
   belongs at.
 
+## OpenSSL error reports (#80)
+
+- `_linebuf_append_cb()` passed `_linebuf_append()`'s return value to
+  `ERR_print_errors_cb()` unchanged, and the two read it opposite ways: 0 is a
+  successful append here and an instruction to abort the report there. Only the
+  first entry in the queue was rendered, and since `ERR_print_errors_cb()` is
+  also what pops entries and the master clears the queue nowhere, the rest were
+  still there at the next failure and came out labelled with that one instead.
+  A key read with the wrong `servkeypass` queues four entries and the one
+  naming the cause is not the first, so the report said `bad decrypt` and the
+  reload after it was described as a passphrase problem. The callback answers
+  positive on a successful append now and keeps answering 0 when the line is
+  full, which is the case that wants the report stopped.
+
 ## Proxy lifecycle (#29)
 
 - `create_proxy()` freed the proxy, NULLed the pointer and then fell into

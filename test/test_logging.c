@@ -66,6 +66,7 @@ int _linebuf_putc(linebuf_t *linebuf, const char c);
 int _linebuf_append_kv(linebuf_t *linebuf, const char *key, const char *value,
                        size_t value_len);
 int _linebuf_append_ossl(linebuf_t *linebuf);
+int _linebuf_append_cb(const char *str, size_t len, void *u);
 int _base_schema(linebuf_t *linebuf, int is_master, loglevel_t level,
                  const char *event);
 int _sanitize_c(const char c, char **outptr, const char *endptr);
@@ -531,6 +532,85 @@ static void linebuf_append_stays_inside_the_buffer_in_plain_mode(
     memset(big, 'a', sizeof(big));
 
     assert_int_equal(_linebuf_append(lb, big, sizeof(big), TPX_MODE_NONE), -1);
+}
+
+
+/* ------------------------------------------------------------------ *
+ * The OpenSSL error queue
+ *
+ * ERR_print_errors_cb() pops one entry per iteration and stops as soon as the
+ * callback returns anything <= 0, so the callback's return value decides both
+ * how much of the report is rendered and how much of the queue is left behind.
+ * The queue is per-thread and the master never clears it, so an entry left
+ * behind comes out attached to whatever fails next.
+ * ------------------------------------------------------------------ */
+
+// How many error entries a rendered line carries: ossl_err_string_int() writes
+// ":error:%08lX" once per entry and the sanitiser leaves both bytes alone.
+static int rendered_entries(const char *line) {
+    int n = 0;
+    for (const char *p = line; (p = strstr(p, ":error:")) != NULL; ++p) ++n;
+    return n;
+}
+
+static int queued_entries(void) {
+    int n = 0;
+    while (ERR_get_error() != 0) ++n;
+    return n;
+}
+
+/* One failed read of an encrypted key queues four entries, and the one that
+   names the cause is not the first. Rendering only the first is what makes a
+   wrong passphrase read as "bad decrypt". */
+static void append_ossl_renders_every_entry_in_the_queue(void **state) {
+    (void)state;
+    linebuf_t lb;
+    lb.u.len = LINEBUF_OFFSET;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb), 0);
+    lb.u.buf[lb.u.len] = '\0';
+    assert_int_equal(rendered_entries(&lb.u.buf[LINEBUF_OFFSET]), 4);
+}
+
+/* ERR_print_errors_cb() is also what pops the queue, so a report that stops
+   early leaves the rest for the next one, which will be labelled with a
+   different failure. */
+static void append_ossl_leaves_nothing_queued_behind_it(void **state) {
+    (void)state;
+    linebuf_t lb;
+    lb.u.len = LINEBUF_OFFSET;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb), 0);
+    assert_int_equal(queued_entries(), 0);
+}
+
+/* The other half of the callback's contract: a full line has to stop the
+   report rather than let OpenSSL keep calling with nowhere to put the text. */
+static void append_ossl_stops_when_the_line_is_full(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = TPX_LOG_LINE_MAX - 8;
+    for (int i = 1; i <= 4; ++i) ERR_raise(ERR_LIB_SSL, i);
+
+    assert_int_equal(_linebuf_append_ossl(&lb), 0);
+    assert_true(lb.u.len <= TPX_LOG_LINE_MAX);
+    assert_true(queued_entries() > 0);
+    assert_int_equal(assert_fail_calls, 0);
+}
+
+/* OpenSSL reads the callback the opposite way round from the rest of the
+   logger: <= 0 aborts the report, so success has to be positive and a full
+   line has to be zero or less. */
+static void append_cb_answers_the_way_openssl_reads_it(void **state) {
+    (void)state;
+    static linebuf_t lb;
+    lb.u.len = LINEBUF_OFFSET;
+    assert_true(_linebuf_append_cb("abc", 3, &lb) > 0);
+
+    lb.u.len = TPX_LOG_LINE_MAX;
+    assert_true(_linebuf_append_cb("abc", 3, &lb) <= 0);
 }
 
 
@@ -1618,6 +1698,12 @@ int main(void) {
         T(base_schema_writes_the_fields_every_line_starts_with),
         T(base_schema_marks_a_master_line_as_master),
         T(strlevel_names_every_level),
+
+        // The OpenSSL error queue
+        T(append_ossl_renders_every_entry_in_the_queue),
+        T(append_ossl_leaves_nothing_queued_behind_it),
+        T(append_ossl_stops_when_the_line_is_full),
+        T(append_cb_answers_the_way_openssl_reads_it),
 
         // The ring buffer
         T(ringbuf_fits_accepts_a_message_that_has_room),
