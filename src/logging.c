@@ -32,6 +32,9 @@
 #define TPX_MODE_SANITIZE 1
 #define TPX_MODE_HEX      2
 
+#define TPX_TRUNC_CLOSE "...\""
+#define TPX_TRUNC_RESERVED (sizeof(TPX_TRUNC_CLOSE)-1)
+
 
 typedef struct linebuf_s {
     union {
@@ -39,6 +42,11 @@ typedef struct linebuf_s {
         char buf[TPX_LOG_LINE_MAX+1];
     } u;
 } linebuf_t;
+
+typedef struct linebuf_cb_ctx_s {
+    linebuf_t *buf;
+    uint8_t   truncated;
+} linebuf_cb_ctx_t;
 
 shared_t *g_shmem;
 
@@ -74,17 +82,25 @@ const char *_rfc3339_time(void);
 const char *_pid(void);
 const char *strlevel(loglevel_t level);
 
-// Each _linebuf function returns -1 when the buffer is full and 0 otherwise
+// Each _linebuf function other than _linebuf_append_cb returns -1 when
+// the buffer is full and 0 otherwise
 int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                    int mode);
+// The inner function for _linebuf_append, reserves `reserved_bytes` at
+// the end of the line buffer, usually for an ellipsis and closing quote
+int _linebuf_append_reserve(linebuf_t *linebuf, const char *str, size_t len,
+                            int mode, size_t reserved_bytes);
 int _linebuf_putc(linebuf_t *linebuf, const char c);
 // This doesn't put spaces around, to add a space before this just add a space
 // in front of the key when calling the function
 int _linebuf_append_kv(linebuf_t *linebuf, const char *key,
                        const char *value, size_t value_len);
-int _linebuf_append_ossl(linebuf_t *linebuf);
-int _linebuf_append_cb(const char *str, size_t len, void *u);
+int _linebuf_append_ossl(linebuf_t *linebuf, const char *key, size_t key_len);
 int _linebuf_append_hex(linebuf_t *linebuf, const unsigned char *buf);
+// This is a cb given to OpenSSL, and so needs to return 0 for failure and
+// 1 for success. For now, it can only succeed (truncation counts as a
+// success)
+int _linebuf_append_cb(const char *str, size_t len, void *u);
 
 void _log_system_err(linebuf_t *linebuf, loglevel_t level, const char *msg,
                      int errtype, int is_master);
@@ -579,11 +595,9 @@ void log_proxy(loglevel_t level, proxy_t *proxy, const char *subevent,
         GUARD_APPEND(_linebuf_append_kv(&linebuf, " error_desc",
                                         desc, strlen(desc)));
     } else if (ERR_peek_error()) {
-        GUARD_APPEND(_linebuf_append(&linebuf, " error_desc=\"",
-                                     sizeof(" error_desc=\"")-1,
-                                     TPX_MODE_NONE));
-        GUARD_APPEND(_linebuf_append_ossl(&linebuf));
-        GUARD_APPEND(_linebuf_putc(&linebuf, '"'));
+        GUARD_APPEND(_linebuf_append_ossl(&linebuf,
+                                          " error_desc",
+                                          sizeof(" error_desc")-1));
     }
     
     _write_linebuf(logger, &linebuf);
@@ -696,11 +710,9 @@ void log_handshake(loglevel_t level, proxy_t *proxy, const char *outcome) {
                                         strerror(errno),
                                         strlen(strerror(errno))));
     } else if (strcmp(outcome, "denied")==0) {
-        GUARD_APPEND(_linebuf_append(&linebuf, " error_desc=\"",
-                                     sizeof(" error_desc=\"")-1,
-                                     TPX_MODE_NONE));
-        GUARD_APPEND(_linebuf_append_ossl(&linebuf));
-        GUARD_APPEND(_linebuf_putc(&linebuf, '"'));
+        GUARD_APPEND(_linebuf_append_ossl(&linebuf,
+                                          " error_desc",
+                                          sizeof(" error_desc")-1));
     }
 
     if (strcmp(outcome, "granted")==0) {
@@ -741,6 +753,13 @@ int _linebuf_putc(linebuf_t *linebuf, const char c) {
 
 int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
                     int mode) {
+    return _linebuf_append_reserve(linebuf, str, len, mode, 0);
+}
+
+
+int _linebuf_append_reserve(linebuf_t *linebuf, const char *str, size_t len,
+                            int mode, size_t reserved_bytes) {
+    assert(reserved_bytes < TPX_LOG_LINE_MAX);
     assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
 
     int (*transform)(const char, char **, const char*) = NULL;
@@ -756,7 +775,7 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
         char *sanitized = linebuf->u.buf;
         // endptrs point to the null terminator
         const char *str_endptr = str+len;
-        const char *san_endptr = &sanitized[TPX_LOG_LINE_MAX];
+        const char *san_endptr = &sanitized[TPX_LOG_LINE_MAX - reserved_bytes];
         char *sanptr = &sanitized[linebuf->u.len];
 
         uint8_t filled = 0;
@@ -770,18 +789,51 @@ int _linebuf_append(linebuf_t *linebuf, const char *str, size_t len,
         linebuf->u.len = sanptr - sanitized;
         if (filled) return -1;
     } else {
-        if (linebuf->u.len + len > TPX_LOG_LINE_MAX) return -1;
+        if (linebuf->u.len + len > TPX_LOG_LINE_MAX - reserved_bytes)
+            return -1;
 
         memcpy(linebuf->u.buf + linebuf->u.len, str, len);
         linebuf->u.len += len;
     }
 
-    assert(linebuf->u.len <= TPX_LOG_LINE_MAX);
+    assert(linebuf->u.len <= TPX_LOG_LINE_MAX - reserved_bytes);
     return 0;
 }
 
-int _linebuf_append_ossl(linebuf_t *linebuf) {
-    ERR_print_errors_cb(_linebuf_append_cb, linebuf);
+int _linebuf_append_ossl(linebuf_t *linebuf, const char *key, size_t key_len) {
+    // It's better if we just give up if we can't fit even a truncated
+    // OpenSSL error of length 0 in
+    if (linebuf->u.len + key_len + (sizeof("=\"")-1) + TPX_TRUNC_RESERVED
+        > TPX_LOG_LINE_MAX) {
+        ERR_clear_error();
+        return -1;
+    }
+
+    // We've shown that there's enough room for these
+    int ret;
+    ret = _linebuf_append(linebuf, key, key_len, TPX_MODE_NONE);
+    assert(ret == 0);
+    ret = _linebuf_putc(linebuf, '=');
+    assert(ret == 0);
+    ret = _linebuf_putc(linebuf, '"');
+    assert(ret == 0);
+
+    linebuf_cb_ctx_t ctx;
+    ctx.buf = linebuf;
+    ctx.truncated = 0;
+
+    ERR_print_errors_cb(_linebuf_append_cb, (void *)&ctx);
+    if (ctx.truncated) {
+        ret = _linebuf_append(linebuf,
+                              TPX_TRUNC_CLOSE, TPX_TRUNC_RESERVED,
+                              TPX_MODE_NONE);
+        assert(ret == 0);
+    } else {
+        ret = _linebuf_putc(linebuf, '"');
+        assert(ret == 0);
+    }
+    (void)ret;
+
     return 0;
 }
 
@@ -836,9 +888,20 @@ void _write_linebuf_fd(int logfd, linebuf_t *linebuf) {
 }
 
 int _linebuf_append_cb(const char *str, size_t len, void *u) {
-    int ret = _linebuf_append((linebuf_t *)u, str, len, TPX_MODE_SANITIZE);
-    // For now, _linebuf_append only returns 0 or -1, with 0 being a success
-    return ret == 0;
+    linebuf_cb_ctx_t *ctx = (linebuf_cb_ctx_t *)u;
+
+    // If we previously truncated, just keep going without writing
+    if (ctx->truncated)
+        return 1;
+
+    int ret = _linebuf_append_reserve(ctx->buf, str, len,
+                                      TPX_MODE_SANITIZE, TPX_TRUNC_RESERVED);
+
+    // If we're too big, finish at this openssl error message
+    if (ret == -1)
+        ctx->truncated = 1;
+
+    return 1;
 }
 
 void _write_linebuf(logger_t *logger, linebuf_t *line) {
@@ -911,11 +974,9 @@ void _log_system_err(linebuf_t *linebuf, loglevel_t level,
                                         strlen(strerror(errno))));
         break;
     case TPX_ERR_OSSL:
-        GUARD_APPEND(_linebuf_append(linebuf, " error_desc=\"",
-                                     sizeof(" error_desc=\"")-1,
-                                     TPX_MODE_NONE));
-        GUARD_APPEND(_linebuf_append_ossl(linebuf));
-        GUARD_APPEND(_linebuf_putc(linebuf, '"'));
+        GUARD_APPEND(_linebuf_append_ossl(linebuf,
+                                          " error_desc",
+                                          sizeof(" error_desc")-1));
         break;
     }
 }
