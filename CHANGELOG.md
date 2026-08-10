@@ -229,6 +229,18 @@ default `tcp_syn_retries` of 6.
   process that never restarts, so a supervisor holding a broken configuration
   and hanging up on a schedule walked it to `EMFILE` with nothing bounding it.
 
+## The logger's write lock (#74)
+
+- `init_logger()` ends by initializing `write_lock`, which is right at startup,
+  when `init_shmem()` has just mapped the region and no worker exists yet, and
+  wrong on a reload, when workers are taking that lock in `_write_linebuf()`
+  for every line they emit. Re-initializing a held mutex is undefined by POSIX
+  and in practice returns it to the unlocked state, so a second worker could
+  enter the critical section while the first was still in it. A
+  `lock_initialized` flag in the shared region, which `init_shmem()`'s
+  `MAP_ANONYMOUS` zeroes for us, now holds the initialization to the once it
+  belongs at.
+
 ## Proxy lifecycle (#29)
 
 - `create_proxy()` freed the proxy, NULLed the pointer and then fell into

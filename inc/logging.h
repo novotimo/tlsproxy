@@ -41,11 +41,14 @@ typedef enum loglevel {
     LL_DEBUG = 4
 } loglevel_t;
 
+// This goes in shared memory, so its booleans can't be bitfields.
+// Bitfields in shared memory structs aren't atomic
 typedef struct logger_s {
     uint8_t enabled; /**< @brief Whether logging is enabled at all */
+    uint8_t droplines; /**< @brief Whether we are dropping new log lines */
+
     loglevel_t loglevel; /**< @brief The maximum level of messages to log */
     int eventfd; /**< @brief The event fd used to notify the logger process */
-    uint8_t droplines; /**< @brief Whether we are dopping new log lines */
 
      /** @brief The index to read from.
       *
@@ -54,8 +57,10 @@ typedef struct logger_s {
       * or read_idx=0 and write_idx=TPX_LOGBUF_SIZE-1
       */
     _Atomic(uint32_t) read_idx;
-    _Atomic(uint32_t) write_idx; /**< @brief The index from which to start writing */
+    _Atomic(uint32_t) write_idx; /**< @brief The index from which to start
+                                  * writing */
     pthread_mutex_t write_lock; /**< @brief One at a time, workers */
+    uint8_t lock_initialized; /**< @brief Whether write_lock is initialized */
     char log_buf[TPX_LOGBUF_SIZE]; /**< @brief A ring buffer containing log
                                       messages to write */
 } logger_t;
