@@ -70,6 +70,18 @@ add_test(NAME integration_reload_fds
                  ${TLSProxy_SOURCE_DIR}/example)
 set_tests_properties(integration_reload_fds PROPERTIES TIMEOUT 60)
 
+add_test(NAME integration_reload_reports
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/reload_reports.sh
+                 $<TARGET_FILE:tlsproxy>
+                 ${TLSProxy_SOURCE_DIR}/example)
+# This one greps the master's stderr for sanitizer diagnostics, which is the
+# only coverage app/main.c gets under -DSANITIZE since the cmocka binaries do
+# not link it. Leak detection is asked for rather than left to the platform
+# default so that a sanitized tree reports the same thing everywhere.
+set_tests_properties(integration_reload_reports PROPERTIES
+    TIMEOUT 60
+    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1")
+
 # A re-initialized mutex is indistinguishable from a fresh one from outside the
 # process, so this one counts pthread_mutex_init() calls through LD_PRELOAD.
 add_library(mutex_probe MODULE integration/mutex_probe.c)
