@@ -322,6 +322,7 @@ int main(int argc, char *argv[]) {
             // If this isn't the worker needing a respawn
             if (respawn && pids[i] != -1)
                 continue;
+            pid_t master_pid = getpid();
             pid_t pid = fork();
             switch (pid) {
             case -1:
@@ -333,7 +334,7 @@ int main(int argc, char *argv[]) {
 
                 // Make sure we die if the parent process does
                 prctl(PR_SET_PDEATHSIG, SIGHUP);
-                if (getppid() == 1)
+                if (getppid() != master_pid)
                     exit(EXIT_FAILURE);
 
                 child_loop(tpx_config, ssl_ctxs, sfd);
@@ -894,6 +895,8 @@ tpx_err_t handle_signal(struct signalfd_siginfo *si,
                             log_system_err_m(logfd, LL_FATAL,
                                              "Workers dying faster than they can be replaced",
                                              TPX_ERR_PLAIN);
+                            fprintf(stderr,"Error: Workers dying faster than they can be replaced\n");
+
                             for (size_t i=0; i<config->nworkers; ++i)
                                 kill_safe(pids[i], SIGKILL);
                             exit(TPX_WORKER_FATAL);
