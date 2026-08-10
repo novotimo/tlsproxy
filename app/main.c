@@ -834,6 +834,10 @@ int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {
 restore_shmem:
     g_shmem->logger.enabled = old_enabled;
     g_shmem->logger.loglevel = old_loglevel;
+    // -1 is a config with no logfile and -2 an open() that failed, so
+    // neither of those has a descriptor to give back
+    if (new_logfd >= 0)
+        close(new_logfd);
 cleanup_conf:
     cyaml_free(&cyaml_config, &top_schema, (cyaml_data_t *)new_config, 0);
     return 0;

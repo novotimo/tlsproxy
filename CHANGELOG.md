@@ -220,6 +220,15 @@ default `tcp_syn_retries` of 6.
 - Workers set `PR_SET_PDEATHSIG`, so they exit with the master rather than
   outliving it holding the listening sockets.
 
+## Rejected reloads (#75)
+
+- `handle_reload()` opens the new configuration's log file before it has
+  decided whether to accept it, since the probe contexts need somewhere to
+  report their failures, and the paths that reject the configuration after that
+  left the descriptor open. Only the master ever reloads and the master is the
+  process that never restarts, so a supervisor holding a broken configuration
+  and hanging up on a schedule walked it to `EMFILE` with nothing bounding it.
+
 ## Proxy lifecycle (#29)
 
 - `create_proxy()` freed the proxy, NULLed the pointer and then fell into
