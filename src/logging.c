@@ -159,22 +159,21 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
 
         // This length includes the current byte.
         size_t len_to_end = TPX_LOGBUF_SIZE - r_idx;
-        uint32_t linelen = 0;
 
-        if (len_to_end >= LINEBUF_OFFSET) {
-            linelen = *(uint32_t *)&logger->log_buf[r_idx];
-            r_idx+=LINEBUF_OFFSET;
-        } else {
-            union {
-                char b[LINEBUF_OFFSET];
-                uint32_t i;
-            } u;
-            for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
-                u.b[j] = logger->log_buf[r_idx];
-                INC_WRAP(r_idx);
-            }
-            linelen = u.i;
+        // r_idx follows whatever length the last line had, so the four bytes
+        // of the prefix are aligned only by chance, and they do not always sit
+        // contiguously either. Assembling it a byte at a time covers both.
+        union {
+            char b[LINEBUF_OFFSET];
+            uint32_t i;
+        } len_union;
+
+        for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
+            len_union.b[j] = logger->log_buf[r_idx];
+            INC_WRAP(r_idx);
         }
+        uint32_t linelen = len_union.i;
+
         // The one value here a worker wrote and the master cannot otherwise
         // constrain. Unchecked it sizes the write() below, and a length under
         // LINEBUF_OFFSET underflows into one that runs off the mapping.
@@ -232,14 +231,10 @@ uint64_t write_logs(int logfd, logger_t *logger, uint64_t evt_count) {
             // For a partial write, we rewrite the length of the log line
             // to the ring buffer and update the read index to match
             if (linelen > 0) {
-                union {
-                    char b[LINEBUF_OFFSET];
-                    uint32_t i;
-                } u;
-                u.i = linelen + LINEBUF_OFFSET;
+                len_union.i = linelen + LINEBUF_OFFSET;
                 for (size_t j=0; j<LINEBUF_OFFSET; ++j) {
                     DEC_WRAP(r_idx);
-                    logger->log_buf[r_idx] = u.b[LINEBUF_OFFSET-j-1];
+                    logger->log_buf[r_idx] = len_union.b[LINEBUF_OFFSET-j-1];
                 }
             }
 

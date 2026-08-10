@@ -136,6 +136,18 @@ default `tcp_syn_retries` of 6.
   message. The write cursor still carries it, because a worker publishes a
   whole line or nothing, and the framed length check covers the read side.
 
+## The framed length prefix (#61)
+
+- `write_logs()` read the four-byte prefix through
+  `*(uint32_t *)&logger->log_buf[read_idx]` whenever it did not straddle the
+  end of the ring. `read_idx` advances by whole messages of arbitrary length,
+  so the address was four-byte aligned only by chance, and while x86 performs
+  the load anyway a strict-alignment target would fault on it. Both paths now
+  assemble the length a byte at a time through the union the wrapping path
+  already used, which is the same load on x86 and defined everywhere else.
+- The UBSan suppression that recorded the finding is gone with it, so the
+  sanitizer job is what catches the load coming back.
+
 ## Audit records (#28)
 
 - The sanitizer escaped neither `"` nor `\`, since both cases sat in the `else`

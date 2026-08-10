@@ -8,21 +8,3 @@
 #
 # Do not add anything here to make a build quiet. Each entry needs the finding
 # written down next to it.
-
-# src/logging.c:write_logs() reads the four-byte length prefix out of the ring
-# buffer with
-#
-#     linelen = *(uint32_t *)&logger->log_buf[logger->read_idx];
-#
-# read_idx advances by whole messages, whose lengths are arbitrary, so the
-# address is almost never 4-byte aligned. On x86-64 the load works and this is
-# invisible; it is undefined behaviour regardless, and on a strict-alignment
-# target it is a fault rather than a slow load. The wrapped branch immediately
-# below it already does the right thing -- it assembles the length a byte at a
-# time through a union -- so the fix is to take that path unconditionally, or
-# to memcpy into a local.
-#
-# Reported by UBSAN as:
-#   src/logging.c:128:21: runtime error: load of misaligned address ...
-#     for type 'uint32_t', which requires 4 byte alignment
-alignment:src/logging.c
