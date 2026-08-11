@@ -506,7 +506,7 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs,
             if (timeout_expired(timeout->key)) {
                 proxy_t *proxy = ngx_rbtree_data(timeout, proxy_t, timer);
                 // We get deleted from the rbtree in here
-                proxy_handle_timeout(proxy, epollfd);
+                proxy_handle_timeout(proxy);
             } else {
                 // timeout->key - gettime() >= 0 (from !timeout_expired),
                 // and we don't create timeouts that are big enough to fill ints

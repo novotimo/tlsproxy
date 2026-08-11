@@ -38,8 +38,6 @@ extern uint32_t nproxies;
 
 // Declare wrapped functions that follow the simplest pattern
 #define WRAPPED_FUNCS \
-    WRAP_FUN(socket, int, (int domain, int type, int protocol),      \
-             (domain, type, protocol))                               \
     WRAP_FUN(SSL_free, void, (SSL *p), (p))            \
     WRAP_FUN(SSL_is_init_finished, int, (const SSL *p), (p))       \
     WRAP_FUN_ERR(connect, int, (int sockfd, const struct sockaddr *addr, \
@@ -64,6 +62,20 @@ extern uint32_t nproxies;
 
 WRAPPED_FUNCS
 #undef WRAP_FUN
+
+/* Out of WRAPPED_FUNCS because the argument is the claim: SOCK_NONBLOCK in the
+   type is what replaced the F_GETFL and F_SETFL pair, and WRAP_FUN discards
+   arguments, so a return-value mock cannot see it. */
+static int socket_type;
+
+int __real_socket(int domain, int type, int protocol);
+int __wrap_socket(int domain, int type, int protocol);
+int __wrap_socket(int domain, int type, int protocol) {
+    socket_type = type;
+    if (has_mock())
+        return (int)mock();
+    return __real_socket(domain, type, protocol);
+}
 
 /* Varargs have to be handled by hand, and the obvious version is wrong. This
    file used to do
@@ -497,34 +509,22 @@ static void create_connect_reports_socket_failure(void **state) {
     assert_int_equal(close_log.calls, 0);
 }
 
-/* socket() has already succeeded by the time either fcntl() runs, so bailing
-   out without close() strands a descriptor for the life of the worker. The
-   worker is long-lived and one fd is leaked per failure, so this is a slow
-   drift towards EMFILE that no amount of connection churn ever recovers from -
-   and once accept() starts failing the listener stops serving entirely. */
-static void create_connect_closes_socket_when_getfl_fails(void **state) {
+/* create_connect() used to follow socket() with F_GETFL and F_SETFL, and
+   leaked the descriptor if either failed. socket() takes SOCK_NONBLOCK now, so
+   both paths are gone and what wants pinning is the flag: without it the
+   backend leg is blocking, and a blocking connect() in the worker stalls every
+   other connection that worker owns until the backend answers. */
+static void create_connect_asks_for_a_nonblocking_socket(void **state) {
     (void)state;
     proxy_t p;
     memset(&p, 0, sizeof(p));
     p.listener = make_listener();
 
-    will_return(__wrap_socket, 50);
-    will_return(__wrap_fcntl, -1);
+    socket_type = 0;
+    will_return(__wrap_socket, -1);
     assert_int_equal(create_connect(&p, 60, 10, 3), -1);
-    assert_true(was_closed(50));
-}
-
-static void create_connect_closes_socket_when_setfl_fails(void **state) {
-    (void)state;
-    proxy_t p;
-    memset(&p, 0, sizeof(p));
-    p.listener = make_listener();
-
-    will_return(__wrap_socket, 50);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, -1);
-    assert_int_equal(create_connect(&p, 60, 10, 3), -1);
-    assert_true(was_closed(50));
+    assert_true((socket_type & SOCK_NONBLOCK) != 0);
+    assert_true((socket_type & SOCK_STREAM) != 0);
 }
 
 /* The whole point of the keepalive work: nothing else in this program will
@@ -540,8 +540,6 @@ static void create_connect_configures_keepalive_on_the_backend(void **state) {
     p.listener = make_listener();
 
     will_return(__wrap_socket, 50);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
 
     assert_int_equal(create_connect(&p, 60, 10, 3), 50);
     assert_true(opt_set_to(SOL_SOCKET, SO_KEEPALIVE, 1));
@@ -566,8 +564,6 @@ static void create_connect_disables_nagle_on_the_backend(void **state) {
     p.listener = make_listener();
 
     will_return(__wrap_socket, 50);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
 
     assert_int_equal(create_connect(&p, 60, 10, 3), 50);
     assert_true(opt_set_to(IPPROTO_TCP, TCP_NODELAY, 1));
@@ -590,8 +586,6 @@ static void create_connect_survives_a_refused_keepalive_option(void **state) {
     p.listener = make_listener();
 
     will_return(__wrap_socket, 50);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_setsockopt, 0);      // SO_KEEPALIVE
     will_return(__wrap_setsockopt, -1);     // TCP_KEEPIDLE refused
     will_return(__wrap_setsockopt, 0);      // TCP_KEEPINTVL
@@ -610,8 +604,6 @@ static void create_connect_survives_a_refused_keepalive_option(void **state) {
 static void create_proxy_ready_when_connect_completes(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
 
     proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
@@ -633,8 +625,6 @@ static void create_proxy_ready_when_connect_completes(void **state) {
 static void create_proxy_pending_when_connect_blocks(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, EINPROGRESS);
     will_return(__wrap_ngx_rbtree_insert, NULL);
@@ -652,8 +642,6 @@ static void create_proxy_pending_when_connect_blocks(void **state) {
 static void create_proxy_null_when_connect_fails(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
@@ -681,8 +669,6 @@ static void create_proxy_failure_does_not_leak_nproxies(void **state) {
     uint32_t before = nproxies;
 
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
@@ -701,8 +687,6 @@ static void create_proxy_failure_does_not_leak_nproxies(void **state) {
 static void create_proxy_failure_does_not_log_null_proxy(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
@@ -724,8 +708,6 @@ static void
 create_proxy_failure_closes_only_the_socket_it_opened(void **state) {
     (void)state;
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, -1);
     will_return(__wrap_connect, ECONNREFUSED);
 
@@ -751,8 +733,6 @@ static void create_proxy_initialises_client_addr(void **state) {
     malloc_override = backing;
 
     will_return(__wrap_socket, 43);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
 
     proxy_t *p = create_proxy(42, NULL, make_listener(), 5, 60, 10, 3,
@@ -885,7 +865,7 @@ static void close_frees_proxy_with_ssl(void **state) {
     uint32_t before = nproxies;
 
     will_return(__wrap_SSL_free, NULL);
-    proxy_close(p, -1);
+    proxy_close(p);
     assert_int_equal(nproxies, before - 1);
 }
 
@@ -894,7 +874,7 @@ static void close_frees_proxy_without_ssl(void **state) {
     proxy_t *p = new_proxy(PS_SERVER_DISCONNECTED);
     uint32_t before = nproxies;
 
-    proxy_close(p, -1);
+    proxy_close(p);
     assert_int_equal(nproxies, before - 1);
 }
 
@@ -916,7 +896,7 @@ static void close_does_not_shut_the_session_down_itself(void **state) {
     p->ssl = (SSL *)0x7;
 
     will_return(__wrap_SSL_free, NULL);
-    proxy_close(p, -1);
+    proxy_close(p);
     assert_int_equal(ssl_shutdown_log.calls, 0);
 }
 
@@ -932,7 +912,7 @@ static void timeout_releases_the_proxy(void **state) {
     uint32_t before = nproxies;
 
     will_return(__wrap_SSL_free, NULL);
-    proxy_handle_timeout(p, -1);
+    proxy_handle_timeout(p);
     assert_int_equal(nproxies, before - 1);
 }
 
@@ -944,19 +924,17 @@ static void close_closes_both_fds(void **state) {
 
     will_return(__wrap_close, 0);
     will_return(__wrap_close, 0);
-    proxy_close(p, 1);
+    proxy_close(p);
 
-    assert_int_equal(epoll_log.calls, 2);
-    assert_int_equal(epoll_log.op[0], EPOLL_CTL_DEL);
-    assert_int_equal(epoll_log.op[1], EPOLL_CTL_DEL);
     assert_true(was_closed(11));
     assert_true(was_closed(12));
 }
 
-/* epollfd == -1 is handle_accept()'s signal that the sockets never made it
-   into epoll. Issuing EPOLL_CTL_DEL against fd -1 would log
-   a spurious warning on every rejected connection. */
-static void close_skips_epoll_when_never_registered(void **state) {
+/* close() removes a descriptor from every epoll set holding it, so proxy_close()
+   does not call EPOLL_CTL_DEL and must not: the two calls it used to make were
+   two syscalls per connection for something the kernel had already promised to
+   do. This is the test that fails if they come back. */
+static void close_leaves_epoll_to_the_kernel(void **state) {
     (void)state;
     proxy_t *p = new_proxy(PS_CLIENT_DISCONNECTED);
     p->serv_fd = 11;
@@ -964,7 +942,7 @@ static void close_skips_epoll_when_never_registered(void **state) {
 
     will_return(__wrap_close, 0);
     will_return(__wrap_close, 0);
-    proxy_close(p, -1);
+    proxy_close(p);
     assert_int_equal(epoll_log.calls, 0);
 }
 
@@ -1681,9 +1659,7 @@ int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup(create_connect_reports_socket_failure,
                                reset_recorders),
-        cmocka_unit_test_setup(create_connect_closes_socket_when_getfl_fails,
-                               reset_recorders),
-        cmocka_unit_test_setup(create_connect_closes_socket_when_setfl_fails,
+        cmocka_unit_test_setup(create_connect_asks_for_a_nonblocking_socket,
                                reset_recorders),
         cmocka_unit_test_setup(
             create_connect_disables_nagle_on_the_backend,
@@ -1729,7 +1705,7 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(timeout_releases_the_proxy, reset_recorders),
         cmocka_unit_test_setup(close_closes_both_fds, reset_recorders),
-        cmocka_unit_test_setup(close_skips_epoll_when_never_registered,
+        cmocka_unit_test_setup(close_leaves_epoll_to_the_kernel,
                                reset_recorders),
 
         cmocka_unit_test_setup(handle_proxy_retries_pending_connect,

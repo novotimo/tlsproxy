@@ -86,7 +86,6 @@ endif()
 
 add_compile_options(-fno-strict-aliasing)
 
-
 configure_file(
   ${CMAKE_SOURCE_DIR}/inc/version.h.in
   ${CMAKE_SOURCE_DIR}/inc/version.h
@@ -103,6 +102,7 @@ add_library(proxy STATIC)
 target_include_directories(proxy PRIVATE inc)
 target_include_directories(proxy SYSTEM PRIVATE external)
 target_link_libraries(proxy PRIVATE warnings)
+target_compile_definitions(proxy PRIVATE _GNU_SOURCE)
 
 # proxy is a static archive, so its own dependencies have to be declared here
 # rather than left to each consumer to list. Consumers were listing OpenSSL and

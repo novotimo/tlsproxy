@@ -212,9 +212,8 @@ tpx_err_t proxy_process_data(proxy_t *proxy, int is_client);
 /**
  * @brief Used to either completely close a proxy or initiate graceful shutdown.
  * @param proxy The proxy to shut down. This will be freed.
- * @param epollfd The epoll fd, used to delete the proxy from epoll.
  */
-void proxy_close(proxy_t *proxy, int epollfd);
+void proxy_close(proxy_t *proxy);
 
 /** @brief Create a nonblocking socket to connect to. */
 int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt);
@@ -226,7 +225,7 @@ int outbuf_empty(proxy_t *proxy, int is_client);
 void proxy_init_timeouts(void);
 
 /** @brief Handle the proxy getting a timeout. */
-void proxy_handle_timeout(proxy_t *proxy, int epollfd);
+void proxy_handle_timeout(proxy_t *proxy);
 
 tpx_err_t proxy_handle_ssl_failure(proxy_t *proxy, int retcode);
 

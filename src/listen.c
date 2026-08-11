@@ -55,22 +55,10 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     
     struct sockaddr_storage addr;
     socklen_t addrlen = sizeof(addr);
-    int conn_sock = accept(listen->fd, (struct sockaddr *) &addr,
-                           &addrlen);
+    int conn_sock = accept4(listen->fd, (struct sockaddr *) &addr,
+                           &addrlen, SOCK_NONBLOCK);
     if (conn_sock == -1) {
         perror("handle_accept: accept");
-        return TPX_FAILURE;
-    }
-
-    int sock_flags;
-    if ((sock_flags = fcntl(conn_sock, F_GETFL)) == -1) {
-        perror("handle_accept: fcntl(GETFL)");
-        close(conn_sock);
-        return TPX_FAILURE;
-    }
-    if (fcntl(conn_sock, F_SETFL, sock_flags | O_NONBLOCK) == -1) {
-        perror("handle_accept: fcntl(SETFL)");
-        close(conn_sock);
         return TPX_FAILURE;
     }
 
@@ -120,7 +108,7 @@ tpx_err_t handle_accept(listen_t *listen, int epollfd) {
     tpx_err_t retval = proxy_add_to_epoll(proxy, epollfd);
     if (retval == TPX_FAILURE) {
         // Need to call with epollfd=-1 to show that the sockets aren't in epoll
-        proxy_close(proxy, -1);
+        proxy_close(proxy);
         fprintf(stderr, "handle_accept: Couldn't add sockets to epoll, not "
                 "making proxy\n");
         return TPX_FAILURE;
