@@ -1,12 +1,18 @@
 #!/bin/sh
 # Drives one benchmark mode across subjects and writes CSV, raw generator
-# output and provenance into results/<run>. All four modes share one CSV
+# output and provenance into results/<run>. All five modes share one CSV
 # schema and one set of validity checks.
 #
 #   bench.sh -m handshake -x "64 256 1024 4096"     closed loop, axis = concurrency
 #   bench.sh -m rate      -x "2000 4000 6000 8000"  open loop,   axis = offered rate
 #   bench.sh -m idle      -x "1000 5000 20000"      held open,   axis = connections
 #   bench.sh -m bulk      -x "64 1024 65536"        echo,        axis = payload bytes
+#   bench.sh -m message   -x "1000 5000 20000"      echo,        axis = connections
+#
+# message holds its connections and sends one small message per connection every
+# -i milliseconds, so its latency columns are msg_* and describe a round trip
+# rather than a handshake. The hs_* columns still describe the handshakes that
+# set the connections up.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -39,9 +45,11 @@ reps=6
 dur=10
 threads=4
 resume=0
+interval=1000
+lockstep=0
 backend=""
 
-while getopts "m:s:e:x:c:r:b:n:R:d:t:B:K" o; do
+while getopts "m:s:e:x:c:r:b:n:R:d:t:B:i:LK" o; do
     case $o in
     m) mode=$OPTARG ;;      s) subjects=$OPTARG ;;
     e) certs=$OPTARG ;;     x) axis=$OPTARG ;;
@@ -49,21 +57,24 @@ while getopts "m:s:e:x:c:r:b:n:R:d:t:B:K" o; do
     b) payload=$OPTARG ;;   n) reqs=$OPTARG ;;
     R) reps=$OPTARG ;;      d) dur=$OPTARG ;;
     t) threads=$OPTARG ;;   B) backend=$OPTARG ;;
+    i) interval=$OPTARG ;;  L) lockstep=1 ;;
     K) resume=1 ;;
-    *) echo "usage: $0 -m handshake|rate|idle|bulk [-x values] [-s subjects]" >&2
+    *) echo "usage: $0 -m handshake|rate|idle|bulk|message [-x values]" \
+            "[-s subjects]" >&2
        exit 2 ;;
     esac
 done
 
 case $mode in
-handshake|rate|idle|bulk) : ;;
-*) echo "mode must be handshake, rate, idle or bulk" >&2; exit 2 ;;
+handshake|rate|idle|bulk|message) : ;;
+*) echo "mode must be handshake, rate, idle, bulk or message" >&2; exit 2 ;;
 esac
 
-# bulk needs the sink echoing; the rest only need it to hold and to close.
+# bulk and message need the sink echoing; the rest only need it to hold and to
+# close.
 if [ -z "$backend" ]; then
     backend=backend-sink
-    [ "$mode" = bulk ] && backend=backend-echo
+    case $mode in bulk|message) backend=backend-echo ;; esac
 fi
 
 run=$(date -u +%Y%m%dT%H%M%SZ)
@@ -130,6 +141,8 @@ wait_ready() {
     echo "cipher           $CIPHER"
     echo "tls_version      $TLSVER"
     echo "resumption       $resume"
+    [ "$mode" = message ] && echo "msg_interval_ms  $interval"
+    [ "$mode" = message ] && echo "msg_lockstep     $lockstep"
     echo "duration_s       $dur"
     echo "reps             $reps"
     echo "threads          $threads"
@@ -149,7 +162,7 @@ wait_ready() {
     done
 } > "$out/provenance.txt" 2>&1
 
-echo "run,sha,mode,model,subject,cert,resume,axis,concurrency,offered_rate,payload,reqs,threads,duration,rep,completed,rate,errors,shed,hs_p50,hs_p95,hs_p99,hs_p999,hs_max,mb_per_sec,cpu_cores,ws_peak_bytes,anon_bytes,file_bytes,slab_bytes,mem_max_delta,throttle_delta,workers_stable,run_ok" > "$csv"
+echo "run,sha,mode,model,subject,cert,resume,axis,concurrency,offered_rate,payload,reqs,threads,duration,rep,completed,rate,errors,shed,hs_p50,hs_p95,hs_p99,hs_p999,hs_max,msg_p50,msg_p95,msg_p99,msg_p999,msg_max,mb_per_sec,cpu_cores,ws_peak_bytes,anon_bytes,file_bytes,slab_bytes,mem_max_delta,throttle_delta,workers_stable,run_ok" > "$csv"
 
 bport=8080
 case $backend in backend-sink) bport=8081 ;; backend-echo) bport=8082 ;; esac
@@ -171,9 +184,9 @@ for cert in $certs; do
         for x in $axis; do
             a_conc=$conc; a_rate=$rate; a_pay=$payload
             case $mode in
-            handshake|idle) a_conc=$x ;;
-            rate)           a_rate=$x ;;
-            bulk)           a_pay=$x ;;
+            handshake|idle|message) a_conc=$x ;;
+            rate)                   a_rate=$x ;;
+            bulk)                   a_pay=$x ;;
             esac
 
             case $mode in
@@ -181,7 +194,9 @@ for cert in $certs; do
             idle)      margs="-m hold -c $a_conc -H 0" ;;
             rate)      margs="-m handshake -r $a_rate -M 400000" ;;
             bulk)      margs="-m request -c $a_conc -b $a_pay -n $reqs" ;;
+            message)   margs="-m message -c $a_conc -b $a_pay -I $interval" ;;
             esac
+            [ "$mode" = message ] && [ "$lockstep" = 1 ] && margs="$margs -L"
             [ "$resume" = 1 ] && margs="$margs -R"
 
             for rep in $(seq 1 "$reps"); do
@@ -224,12 +239,22 @@ for cert in $certs; do
                             if (kv[1]=="p99")  p99=kv[2]
                             if (kv[1]=="p999") p999=kv[2]
                             if (kv[1]=="max")  mx=kv[2] } }
+                    # Left empty rather than zeroed for the modes that send no
+                    # messages, so a median never averages in a column that was
+                    # never measured.
+                    /^messages=/ {
+                        for (i=1;i<=NF;i++) { split($i,kv,"=")
+                            if (kv[1]=="msg_ms_p50") m50=kv[2]
+                            if (kv[1]=="p95")  m95=kv[2]
+                            if (kv[1]=="p99")  m99=kv[2]
+                            if (kv[1]=="p999") m999=kv[2]
+                            if (kv[1]=="max")  mmx=kv[2] } }
                     /^bytes_up=/ {
                         for (i=1;i<=NF;i++) { split($i,kv,"=")
                             if (kv[1]=="mbytes_per_sec") mb=kv[2] } }
-                    END { printf "%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%d",
+                    END { printf "%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%d",
                           comp+0, rt+0, er+0, sh+0, p50+0, p95+0, p99+0,
-                          p999+0, mx+0, mb+0, ok+0 }
+                          p999+0, mx+0, m50, m95, m99, m999, mmx, mb+0, ok+0 }
                 ' "$raw")
                 ok=${stats##*,}; stats=${stats%,*}
 
@@ -237,7 +262,11 @@ for cert in $certs; do
                             'BEGIN{printf "%.3f",(b-a)/1000000/d}')
                 stable=0; [ "$pre_procs" = "$post_procs" ] && stable=1
                 tdelta=$((post_thr - pre_thr)); mmdelta=$((post_mm - pre_mm))
-                model=closed; [ "$mode" = rate ] && model=open
+                # message is open per message rather than per connection: the
+                # send grid is fixed in advance, so a subject that cannot keep
+                # up misses slots instead of being offered less.
+                model=closed
+                case $mode in rate|message) model=open ;; esac
 
                 echo "$run,$sha,$mode,$model,$subj,$cert,$resume,$x,$a_conc,$a_rate,$a_pay,$reqs,$threads,$dur,$rep,$stats,$cores,$ws,$anon,$file,$slab,$mmdelta,$tdelta,$stable,$ok" >> "$csv"
 
