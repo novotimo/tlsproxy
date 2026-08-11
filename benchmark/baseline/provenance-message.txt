@@ -1,5 +1,5 @@
-run              20260811T064341Z
-tlsproxy_sha     9b38c8f
+run              20260811T125011Z
+tlsproxy_sha     8e2dbee
 mode             message
 axis             1000 5000 20000
 backend          backend-echo
@@ -13,7 +13,7 @@ msg_interval_ms  1000
 msg_lockstep     0
 duration_s       30
 reps             3
-threads          4
+threads          16
 --- subject host ---
 role                             subject
 host                             Linux 6.18.41-gentoo-dist x86_64
@@ -26,7 +26,7 @@ net.core.rmem_max                16777216
 net.core.wmem_max                16777216
 net.core.netdev_max_backlog      16384
 net.netfilter.nf_conntrack_max   1048576
-net.netfilter.nf_conntrack_count 202
+net.netfilter.nf_conntrack_count 198
 net.netfilter.nf_conntrack_tcp_timeout_time_wait 30
 nofile soft/hard                 4096/4096
 fs.nr_open                       1048576

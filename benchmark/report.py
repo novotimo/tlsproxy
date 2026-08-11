@@ -31,6 +31,22 @@ def load(path):
     return out
 
 
+# Errors were once judged against zero, which stopped working the moment the
+# generator got its full sixteen threads: haproxy then failed 2 to 5 connections
+# in every 100,000, which is 0.005% and is not a broken run, and the absolute
+# rule threw away every haproxy row in the sweep for it. A rate keeps those and
+# still excludes nginx at 4096 concurrency, which fails 0.19%.
+ERROR_RATE_LIMIT = 0.0001
+
+
+def too_many_errors(r):
+    errors = int(r.get("errors", 0) or 0)
+    if errors == 0:
+        return False
+    completed = int(r.get("completed", 0) or 0)
+    return completed == 0 or errors / completed > ERROR_RATE_LIMIT
+
+
 def valid(rows):
     """Drop rows that failed a validity check, and say how many."""
     keep, drop = [], 0
@@ -38,7 +54,7 @@ def valid(rows):
         if int(r.get("rep", 1)) <= 1:
             continue
         bad = (r.get("run_ok", "1") != "1"
-               or int(r.get("errors", 0)) != 0
+               or too_many_errors(r)
                or int(r.get("mem_max_delta", 0)) != 0
                or int(r.get("throttle_delta", 0)) != 0
                or r.get("workers_stable", "1") != "1")
@@ -47,6 +63,23 @@ def valid(rows):
         else:
             keep.append(r)
     return keep, drop
+
+
+def generator_bound(rows, limit=70.0):
+    """Rows where the generator was busier than it should have been.
+
+    A subject that is not saturated while the generator is means the number
+    describes the generator. This does not exclude the row, because a busy
+    generator is not automatically a wrong measurement, only a suspect one.
+    """
+    n = 0
+    for r in rows:
+        try:
+            if float(r.get("gen_busy_pct") or 0) >= limit:
+                n += 1
+        except ValueError:
+            pass
+    return n
 
 
 # The first handshake sweeps were driven by tls-perf and called this column
@@ -142,6 +175,10 @@ def render(mode, rows, base_rows):
             out.append(f"| {s} | {a} | " + " | ".join(cells) + " |")
     if dropped:
         out.append(f"\n{dropped} row(s) excluded by a validity check.")
+    busy = generator_bound(keep)
+    if busy:
+        out.append(f"\n{busy} row(s) had the generator above 70% busy, so they "
+                   f"may describe the generator rather than the subject.")
     if mode == "handshake":
         out.append("")
         out.append("| subject | concurrency | CPU per handshake |")

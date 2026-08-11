@@ -1,5 +1,5 @@
-run              20260811T063718Z
-tlsproxy_sha     9b38c8f
+run              20260811T124346Z
+tlsproxy_sha     8e2dbee
 mode             bulk
 axis             64 1024 8192 65536 1048576
 backend          backend-echo
@@ -25,7 +25,7 @@ net.core.rmem_max                16777216
 net.core.wmem_max                16777216
 net.core.netdev_max_backlog      16384
 net.netfilter.nf_conntrack_max   1048576
-net.netfilter.nf_conntrack_count 8
+net.netfilter.nf_conntrack_count 10
 net.netfilter.nf_conntrack_tcp_timeout_time_wait 30
 nofile soft/hard                 4096/4096
 fs.nr_open                       1048576

@@ -348,14 +348,31 @@ one is excluded from the graphs with the number of exclusions printed rather
 than dropped quietly. The row is kept either way, since a run discarded at
 capture leaves no evidence that it happened.
 
+**Failed connections.** A rate rather than zero, currently one in 10,000. It was
+zero until 2026-08-11, when the generator was given its full sixteen threads and
+haproxy began failing 2 to 5 connections in every 100,000 at every concurrency.
+That is 0.005% and is not a broken run, but the absolute rule threw away every
+haproxy row in the sweep for it, which is worse than reporting the rate. The
+threshold still excludes nginx at 4096 concurrency, which fails 0.19%. tlsproxy
+has not yet failed a connection at any concurrency in any sweep.
+
 **Subject saturation.** The subject's cpuset utilization is sampled through the
 run. A peak reported while the subject was not saturated is a floor on the
 subject and a ceiling on something else, and gets labelled that way.
 
-**Generator headroom.** Before each measured run the generator is pointed at a
-sink that costs nothing to serve, and has to produce at least twice the rate
-the subject absorbed. A generator that cannot is the ceiling, and a number
-taken against one is a measurement of the load generator.
+**Generator headroom.** The generator's own CPU utilization is sampled around
+every rep and recorded as `gen_busy_pct`, and `report.py` says how many rows
+were above 70%. A row is not excluded for it, since a busy generator is suspect
+rather than wrong, but a subject that is not saturated while the generator is
+means the number describes the generator.
+
+This is not hypothetical. On 2026-08-11 the 20,000 connection point of
+`-m message` reported a p99 of 158 ms against a subject using 1.0 of its 8
+cores, with the generator host 4.8% busy overall but only four threads running;
+raising the generator to twelve threads against the same subject took that p99
+to 18.9 ms. The generator now runs one thread per CPU it has, which `bench.sh`
+reads from the generator itself rather than assuming, so the only way back into
+that hole is to pass `-t` by hand.
 
 **Thermal state.** The subject is a laptop, so its clocks are the least
 repeatable thing in the arrangement. `intel_pstate` is pinned to the
@@ -538,6 +555,12 @@ below what the subjects can move, so across the wire it would measure the NIC.
 It pins the generator to `6,7,14,15`, off the subject's cpuset. The subject
 takes `0-3,8-11`, four whole physical cores with their siblings, and the
 backend `4,5,12,13`.
+
+Every other mode drives from the generator host, which is a Ryzen 7 5800X with
+16 threads running nothing else, and `bench.sh` gives `tlsload` one thread per
+one of them. There is nothing to be gained by holding any of it back: the
+generator is not the thing under test, and starving it produces latency that
+reads exactly like the subject's.
 
 **All three subjects run eight workers, one per logical CPU in that cpuset,
 changed from four on 2026-08-11.** `cpu0`'s sibling is `cpu8`, so the cpuset is

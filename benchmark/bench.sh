@@ -43,7 +43,7 @@ payload=1024
 reqs=1
 reps=6
 dur=10
-threads=4
+threads=0                       # 0 = one per generator CPU, see below
 resume=0
 interval=1000
 lockstep=0
@@ -89,6 +89,36 @@ procs()    { sort -n "$1/cgroup.procs" 2>/dev/null | tr '\n' ' '; }
 throttle() { cat /sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count \
                  2>/dev/null || echo 0; }
 mem_max()  { awk '/^max /{print $2}' "$1/memory.events" 2>/dev/null || echo 0; }
+
+# The generator's own utilization, sampled around each rep. A subject that is
+# not saturated while the generator is says the number belongs to the
+# generator: measured on 2026-08-11, the 20,000 connection point of -m message
+# had a p99 of 158 ms with four generator threads and 18.9 ms with twelve,
+# against the same subject, because the generator could not service its own
+# connections fast enough to time them accurately.
+gen_stat() {
+    [ "$GEN" = local ] && return 0
+    $SSH -n "$GEN" 'head -1 /proc/stat' 2>/dev/null || true
+}
+gen_busy() {   # $1 = before, $2 = after
+    [ -n "$1" ] && [ -n "$2" ] || return 0
+    printf '%s\n%s\n' "$1" "$2" | awk '
+        NR==1 { for (i=2;i<=NF;i++) { b[i]=$i; bt+=$i } bi=$5+$6 }
+        NR==2 { for (i=2;i<=NF;i++) { at+=$i } ai=$5+$6
+                d=at-bt; if (d>0) printf "%.1f", 100*(d-(ai-bi))/d }'
+}
+
+# One generator thread per CPU it has. The generator host runs nothing else, so
+# there is no reason to leave any of it idle; a thread-starved generator shows
+# up as subject latency and is very hard to tell apart from the real thing.
+if [ "$threads" -eq 0 ]; then
+    if [ "$GEN" = local ]; then
+        threads=$(echo "$GEN_CPUS" | tr ',' '\n' | awk -F- \
+                  '{ if (NF==2) n+=$2-$1+1; else n+=1 } END { print n }')
+    else
+        threads=$($SSH -n "$GEN" nproc 2>/dev/null || echo 4)
+    fi
+fi
 
 sample_mem() {
     _cg=$1; _out=$2; _done=$3
@@ -166,7 +196,7 @@ wait_ready() {
     done
 } > "$out/provenance.txt" 2>&1
 
-echo "run,sha,mode,model,subject,cert,resume,axis,concurrency,offered_rate,payload,reqs,threads,duration,rep,completed,rate,errors,shed,hs_p50,hs_p95,hs_p99,hs_p999,hs_max,msg_p50,msg_p95,msg_p99,msg_p999,msg_max,mb_per_sec,cpu_cores,ws_peak_bytes,anon_bytes,file_bytes,slab_bytes,mem_max_delta,throttle_delta,workers_stable,run_ok" > "$csv"
+echo "run,sha,mode,model,subject,cert,resume,axis,concurrency,offered_rate,payload,reqs,threads,duration,rep,completed,rate,errors,shed,hs_p50,hs_p95,hs_p99,hs_p999,hs_max,msg_p50,msg_p95,msg_p99,msg_p999,msg_max,mb_per_sec,cpu_cores,gen_busy_pct,ws_peak_bytes,anon_bytes,file_bytes,slab_bytes,mem_max_delta,throttle_delta,workers_stable,run_ok" > "$csv"
 
 bport=8080
 case $backend in backend-sink) bport=8081 ;; backend-echo) bport=8082 ;; esac
@@ -207,6 +237,7 @@ for cert in $certs; do
                 raw="$out/$mode-$subj-$cert-x$x-r$rep.txt"
                 pre_procs=$(procs "$cg"); pre_cpu=$(cpu_usec "$cg")
                 pre_thr=$(throttle);      pre_mm=$(mem_max "$cg")
+                pre_gen=$(gen_stat)
 
                 rm -f "$out/.done" "$out/.mem"
                 sample_mem "$cg" "$out/.mem" "$out/.done" &
@@ -224,6 +255,8 @@ for cert in $certs; do
                 fi
 
                 touch "$out/.done"; wait "$sampler" 2>/dev/null || true
+                post_gen=$(gen_stat)
+                gbusy=$(gen_busy "$pre_gen" "$post_gen")
                 post_cpu=$(cpu_usec "$cg"); post_procs=$(procs "$cg")
                 post_thr=$(throttle);       post_mm=$(mem_max "$cg")
                 set -- $(cat "$out/.mem" 2>/dev/null || echo 0 0 0 0)
@@ -272,19 +305,20 @@ for cert in $certs; do
                 model=closed
                 case $mode in rate|message) model=open ;; esac
 
-                echo "$run,$sha,$mode,$model,$subj,$cert,$resume,$x,$a_conc,$a_rate,$a_pay,$reqs,$threads,$dur,$rep,$stats,$cores,$ws,$anon,$file,$slab,$mmdelta,$tdelta,$stable,$ok" >> "$csv"
+                echo "$run,$sha,$mode,$model,$subj,$cert,$resume,$x,$a_conc,$a_rate,$a_pay,$reqs,$threads,$dur,$rep,$stats,$cores,$gbusy,$ws,$anon,$file,$slab,$mmdelta,$tdelta,$stable,$ok" >> "$csv"
 
                 comp=${stats%%,*};  rest=${stats#*,}
                 rt=${rest%%,*};     rest=${rest#*,}
                 er=${rest%%,*};     rest=${rest#*,}
                 sh=${rest%%,*}
-                printf '%-9s %-13s x=%-6s r=%s %7s/s %5s cores %6sMB err=%s shed=%s%s%s%s%s\n' \
+                printf '%-9s %-13s x=%-6s r=%s %7s/s %5s cores %6sMB err=%s shed=%s%s%s%s%s%s\n' \
                     "$mode" "$subj" "$x" "$rep" "$rt" "$cores" \
                     "$((ws / 1048576))" "$er" "$sh" \
                     "$([ "$stable" = 1 ] || echo '  WORKERS-CHANGED')" \
                     "$([ "$tdelta" = 0 ] || echo '  THROTTLED')" \
                     "$([ "$mmdelta" = 0 ] || echo '  MEM-PRESSURE')" \
-                    "$([ "$ok" = 1 ] || echo '  RUN-FAILED')"
+                    "$([ "$ok" = 1 ] || echo '  RUN-FAILED')" \
+                    "$(awk -v g="$gbusy" 'BEGIN{if (g+0 >= 70) print "  GEN-BUSY " int(g) "%"}')"
             done
         done
         $DOCKER compose --profile "$subj" rm -sf "$subj" >/dev/null 2>&1 || true
