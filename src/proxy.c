@@ -163,6 +163,13 @@ int create_connect(proxy_t *proxy, int keepidle, int keepintvl, int keepcnt) {
         log_proxy(LL_WARN, proxy, "ioerror",
                   "Couldn't set keepcnt on connect socket", strerror(errno));
 
+    opt = 1;
+    if (setsockopt(conn_sock, IPPROTO_TCP, TCP_NODELAY,
+                   &opt, sizeof(opt)) == -1)
+        log_proxy(LL_WARN, proxy, "ioerror",
+                  "Couldn't set tcp nodelay on connect socket",
+                  strerror(errno));
+
     return conn_sock;
 }
 
