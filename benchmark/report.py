@@ -104,6 +104,16 @@ SPEC = {
     "bulk":      ("Data path against payload size", "payload bytes",
                   [("mb_per_sec", "MB/s", 1.0, "{:.0f}", False),
                    ("cpu_cores", "cores", 1.0, "{:.2f}", True)]),
+    # A message mode row describes a round trip on a connection that was
+    # already up, so the interesting columns are the tail and the missed slots,
+    # not the median, which every subject gets right.
+    "message":   ("Message round trip on held connections", "connections",
+                  [("msg_p50", "p50 ms", 1.0, "{:.2f}", True),
+                   ("msg_p99", "p99 ms", 1.0, "{:.2f}", True),
+                   ("msg_p999", "p999 ms", 1.0, "{:.2f}", True),
+                   ("msg_max", "max ms", 1.0, "{:.1f}", True),
+                   ("rate", "msg/s", 1.0, "{:.0f}", False),
+                   ("shed", "missed slots", 1.0, "{:.0f}", True)]),
 }
 
 
@@ -163,7 +173,7 @@ def main():
     print(f"tlsproxy SHA: {', '.join(shas)}")
     if base:
         print("Percentages are against the baseline, positive meaning better.")
-    for m in ["handshake", "rate", "idle", "bulk"]:
+    for m in ["handshake", "rate", "idle", "bulk", "message"]:
         if m in data:
             print(render(m, data[m], base.get(m) if base else None))
     return 0

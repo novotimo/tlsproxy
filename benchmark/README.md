@@ -286,7 +286,7 @@ and #44 means there are no TLS knobs to sweep.
 
 ## Measurements
 
-Four modes, all driven by `bench.sh` onto one CSV schema. The harness emits the
+Five modes, all driven by `bench.sh` onto one CSV schema. The harness emits the
 CSV, a committed plotting script renders the images, and CSV, script and images
 are all committed together.
 
@@ -314,6 +314,28 @@ are all committed together.
    points are where a payload spans several queue chunks. Connections persist
    for the whole run rather than churning, since at small payloads a churning
    client measures its own ephemeral port table instead of the proxy.
+5. **Message round trip on held connections,** `-m message`. N connections
+   established once and held, each sending one `-b` byte message every `-i`
+   milliseconds against the echo sink, swept over N. The other four modes all
+   miss this: handshake and rate close a connection the moment it is up, idle
+   sends nothing at all, and bulk streams continuously with `-n 0` so the
+   window is never small. That leaves the steady state of every workload the
+   proxy is actually for, an MQTT broker or a game server or an RPC service,
+   unmeasured, and it is where Nagle, a wake-up per message and any per-message
+   allocation show up. The latency columns for this mode are `msg_*` and
+   describe a round trip; `hs_*` still describes the handshakes that set the
+   connections up.
+
+   The send grid is absolute and fixed in advance, so a connection whose
+   response came back later than its own interval skips the slots it missed and
+   they are counted in `shed`. Advancing from completion instead would let a
+   slow subject quietly lower the offered rate until it matched whatever it
+   could serve, which is the same reason `-m rate` exists. Each connection
+   takes a phase fixed once at setup so a thread's sends spread evenly over one
+   interval; `-L` puts them all in phase instead, which is what a game tick
+   looks like. Run it over the wire like the first three modes rather than with
+   `GEN=local`, since a generator sharing the subject's CPU adds scheduler
+   noise to exactly the tail this mode exists to measure.
 
 Two derived quantities normalize the rest and carry the comparison: **CPU per
 handshake** and **MB/s per core**. A subject that wins on rate while spending a
@@ -342,6 +364,21 @@ gives up peak throughput for runs that can be compared to each other. On top of
 that, `thermal_throttle/package_throttle_count` is read before and after every
 run and any movement fails it, because a run that throttled part way through
 reports a median that no configuration produced.
+
+**Resumption actually happening.** With `-K`, `tlsload` prints `reused=` on the
+`completed=` line of every raw file, counting the handshakes the server
+resumed. A `-K` run reporting `reused=0` measured full handshakes in both arms
+and says nothing about resumption. Two things made that the default outcome
+until 2026-08-11 and both are worth knowing, since either one alone is enough to
+turn the flag into a no-op: TLS 1.3 has no session to take when `SSL_connect()`
+returns, because the server sends NewSessionTicket afterwards and only a read
+processes it, so the session has to be collected from
+`SSL_CTX_sess_set_new_cb()`; and `SSL_free()` on a connection closed without
+`close_notify` runs `ssl_clear_bad_session()`, which calls
+`SSL_CTX_remove_session()` and sets `not_resumable` on the session object
+itself, so a session held by reference is spoiled by the connection that
+supplied it and then by every connection that offers it. `tlsload` keeps a
+copy, and hands out a copy per connection, for that reason.
 
 **Ephemeral ports.** The client closes first in every churn test, so TIME_WAIT
 accumulates on the generator. Linux holds TIME_WAIT for 60 seconds and exposes
@@ -463,6 +500,23 @@ since repeatable runs matter more here than peak ones, and this chassis
 otherwise throttles. To undo it without rebooting, write `0` to
 `intel_pstate/no_turbo` and `powersave` back to every `scaling_governor`.
 
+`bench.sh` brings each subject up with `compose up -d` and no `--build`, so it
+runs whatever is already tagged `tlsproxy:bench-deb` and a change to the tree
+does not reach it. Rebuild first, and note that a local `cmake --build build`
+does nothing here since the subject is the image and the image compiles its own
+copy from the build context:
+
+```sh
+docker compose --profile tlsproxy build tlsproxy
+```
+
+`provenance.txt` records `tlsproxy_sha` from `git rev-parse HEAD`, which is
+blind to uncommitted work, so two runs either side of an unstaged change are
+indistinguishable in it. When measuring something not yet committed, keep the
+old image under a second tag (`docker tag tlsproxy:bench-deb
+tlsproxy:bench-deb-<before>`) and retag to pick the arm, since `compose.yml`
+names one image.
+
 Then any of the four modes:
 
 ```sh
@@ -471,7 +525,13 @@ Then any of the four modes:
 ./bench.sh -m idle      -x "1000 5000 20000" -d 30 -R 3
 GEN=local ./bench.sh -m bulk -x "64 1024 8192 65536 1048576" \
     -c 32 -n 0 -d 8 -R 3
+./bench.sh -m message   -x "1000 5000 20000" -b 200 -i 1000 -d 30 -R 3
+./bench.sh -m message   -x "1000 5000"       -b 200 -i 33 -L -d 30 -R 3
 ```
+
+The two message runs are the two shapes worth having: a message a second per
+connection is the MQTT and RPC case, and 33 ms in lockstep is a 30 Hz game
+tick. `-b` is the message size each way, since the sink echoes.
 
 `bulk` runs with `GEN=local` because a gigabit link caps the data path far
 below what the subjects can move, so across the wire it would measure the NIC.
@@ -494,7 +554,7 @@ the underlying column goes up or down.
 | Path | State |
 | --- | --- |
 | `README.md` | this file, the method |
-| `bench.sh` | the entry point for all four modes, writing provenance and the git SHA into every result |
+| `bench.sh` | the entry point for all five modes, writing provenance and the git SHA into every result |
 | `report.py` | renders a results directory as markdown; `--against baseline/` adds deltas |
 | `BASELINE.md` | the reference numbers as a report, with the caveats that stop them being a published result |
 | `baseline/` | the CSVs and provenance behind it at `6e847f2`, tracked so a later run has something to diff against |
@@ -506,7 +566,7 @@ the underlying column goes up or down.
 | `backend/nginx.conf` | the HTTP backend, for the tests that speak HTTP over the tunnel |
 | `backend/sink/` | the discard/echo backend, static on `scratch` so its cgroup accounts for connection state and nothing else |
 | `generators/build.sh` | builds `tlsload`, `tls-perf` and `wrk2` for the generator host and records what they are |
-| `generators/tlsload/` | the open-model generator: handshake, hold and request modes, client-pinned TLS parameters, latency percentiles |
+| `generators/tlsload/` | the open-model generator: handshake, hold, request and message modes, client-pinned TLS parameters, latency percentiles |
 | `diag/` | per-second memory and socket-state time series for one subject under load |
 | `monitoring.yml` | Prometheus, cAdvisor, node-exporter and Grafana, split out so bringing up the benchmark does not bring them up beside the subject |
 | `prometheus.yml` | configuration for the above |

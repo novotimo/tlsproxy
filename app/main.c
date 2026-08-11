@@ -639,6 +639,7 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
                | SSL_OP_CIPHER_SERVER_PREFERENCE;
     
     SSL_CTX_set_options(ctx, opts);
+    SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
 
     if (config->cacerts != NULL) {
         if (load_servcert(config, ctx, logfd) == 0)
