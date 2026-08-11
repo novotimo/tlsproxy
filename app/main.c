@@ -506,7 +506,7 @@ void child_loop(tpx_config_t *tpx_config, SSL_CTX **ssl_ctxs,
             if (timeout_expired(timeout->key)) {
                 proxy_t *proxy = ngx_rbtree_data(timeout, proxy_t, timer);
                 // We get deleted from the rbtree in here
-                proxy_handle_timeout(proxy, epollfd);
+                proxy_handle_timeout(proxy);
             } else {
                 // timeout->key - gettime() >= 0 (from !timeout_expired),
                 // and we don't create timeouts that are big enough to fill ints
@@ -639,7 +639,12 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
                | SSL_OP_CIPHER_SERVER_PREFERENCE;
     
     SSL_CTX_set_options(ctx, opts);
+    // Make sure OpenSSL buffers get released for idle connections, saves RAM
     SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
+
+    // For now we set the number of tickets to 1, we'll make this configurable
+    // later on (issue #44)
+    SSL_CTX_set_num_tickets(ctx, 1);
 
     if (config->cacerts != NULL) {
         if (load_servcert(config, ctx, logfd) == 0)

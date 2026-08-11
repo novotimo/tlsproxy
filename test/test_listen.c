@@ -177,11 +177,25 @@ static int was_closed(int fd) {
 static struct sockaddr_storage accept_peer;
 static socklen_t accept_peer_len;
 
-int __real_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
-int __wrap_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
-int __wrap_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+/* accept4() rather than accept(): handle_accept() asks the kernel for a
+   non-blocking descriptor in the one call instead of following up with
+   F_GETFL and F_SETFL, so a wrapper on accept() would sit there intercepting
+   nothing while the real syscall ran against a listener the test never made.
+   The flags are recorded because SOCK_NONBLOCK is the whole point of the
+   change and dropping it would leave a blocking client socket in an
+   edge-triggered event loop, which stalls a worker on the first partial read
+   rather than failing. */
+static int accept4_flags;
+
+int __real_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen,
+                   int flags);
+int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen,
+                   int flags);
+int __wrap_accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen,
+                   int flags) {
+    accept4_flags = flags;
     if (!has_mock())
-        return __real_accept(sockfd, addr, addrlen);
+        return __real_accept4(sockfd, addr, addrlen, flags);
 
     int fd = (int)mock();
     if (fd >= 0 && addr != NULL && addrlen != NULL) {
@@ -319,20 +333,18 @@ tpx_err_t __wrap_proxy_add_to_epoll(proxy_t *proxy, int epollfd) {
 
 /* Stubbed, not forwarded: several tests hand create_proxy() a fake non-NULL
    pointer, and the real proxy_close() would dereference it. What handle_accept
-   owes the contract is the delegation itself - that it calls proxy_close with
-   epollfd = -1 so the sockets are not looked for in an epoll set they never
-   reached. test_proxy.c covers what proxy_close() then does. */
+   owes the contract is the delegation itself, that the descriptors go back to
+   proxy_close() rather than being abandoned. test_proxy.c covers what
+   proxy_close() then does. */
 static struct {
     unsigned int calls;
     proxy_t *proxy[MAX_RECORDED];
-    int epollfd[MAX_RECORDED];
 } proxy_close_log;
 
-void __wrap_proxy_close(proxy_t *proxy, int epollfd);
-void __wrap_proxy_close(proxy_t *proxy, int epollfd) {
+void __wrap_proxy_close(proxy_t *proxy);
+void __wrap_proxy_close(proxy_t *proxy) {
     if (proxy_close_log.calls < MAX_RECORDED) {
         proxy_close_log.proxy[proxy_close_log.calls] = proxy;
-        proxy_close_log.epollfd[proxy_close_log.calls] = epollfd;
     }
     proxy_close_log.calls++;
 }
@@ -404,9 +416,7 @@ static listen_t *make_listener(void) {
    earlier step consumes. Spelling this out in every test buried the one line
    that differed between them. */
 static void accept_up_to_ssl(void) {
-    will_return(__wrap_accept, ACCEPTED_FD);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
+    will_return(__wrap_accept4, ACCEPTED_FD);
 }
 
 
@@ -419,7 +429,7 @@ static void accept_up_to_ssl(void) {
    close() is genuinely not supposed to be called. */
 static void handle_accept_reports_accept_failure(void **state) {
     (void)state;
-    will_return(__wrap_accept, -1);
+    will_return(__wrap_accept4, -1);
 
     assert_int_equal(handle_accept(make_listener(), 9), TPX_FAILURE);
     assert_int_equal(close_log.calls, 0);
@@ -431,29 +441,17 @@ static void handle_accept_reports_accept_failure(void **state) {
    child_loop() only acts on TPX_CLOSED, so a TPX_FAILURE means the fd is gone
    for the life of the worker.
 
-   These first two are the mild ones. F_GETFL and F_SETFL on a descriptor
-   accept() returned a microsecond earlier fail for essentially no reason a
-   running system produces, so treat them as latent rather than live. They are
-   here because they are the same defect as the three below it, they cost one
-   line each to fix, and leaving two of five paths uncovered is how the next
-   person concludes the pattern was deliberate. */
-static void handle_accept_closes_fd_when_getfl_fails(void **state) {
+   There used to be two more of these, covering F_GETFL and F_SETFL failing on
+   the descriptor accept() had just returned. accept4() sets O_NONBLOCK itself,
+   so those paths no longer exist and the flag argument is what wants pinning
+   instead. */
+static void handle_accept_asks_for_a_nonblocking_descriptor(void **state) {
     (void)state;
-    will_return(__wrap_accept, ACCEPTED_FD);
-    will_return(__wrap_fcntl, -1);
+    accept4_flags = 0;
+    will_return(__wrap_accept4, -1);
 
-    assert_int_equal(handle_accept(make_listener(), 9), TPX_FAILURE);
-    assert_true(was_closed(ACCEPTED_FD));
-}
-
-static void handle_accept_closes_fd_when_setfl_fails(void **state) {
-    (void)state;
-    will_return(__wrap_accept, ACCEPTED_FD);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, -1);
-
-    assert_int_equal(handle_accept(make_listener(), 9), TPX_FAILURE);
-    assert_true(was_closed(ACCEPTED_FD));
+    handle_accept(make_listener(), 9);
+    assert_true((accept4_flags & SOCK_NONBLOCK) != 0);
 }
 
 /* SSL_new() returns NULL when OpenSSL cannot allocate. That is reachable on a
@@ -524,9 +522,10 @@ static void handle_accept_frees_ssl_when_create_proxy_fails(void **state) {
 }
 
 /* Once a proxy exists the descriptors belong to it, and the epoll failure path
-   correctly hands them back through proxy_close(). The -1 matters: the sockets
-   were never registered, so passing a real epollfd would make proxy_close()
-   issue EPOLL_CTL_DEL on unregistered fds and log a warning for each. */
+   correctly hands them back through proxy_close(). There used to be an epollfd
+   argument here, carrying -1 to say the sockets never reached an epoll set;
+   proxy_close() leaves the removal to close() now, so there is nothing to pass
+   and nothing to get wrong. */
 static void handle_accept_delegates_cleanup_on_epoll_failure(void **state) {
     (void)state;
     accept_up_to_ssl();
@@ -539,7 +538,6 @@ static void handle_accept_delegates_cleanup_on_epoll_failure(void **state) {
     assert_int_equal(handle_accept(make_listener(), 9), TPX_FAILURE);
     assert_int_equal(proxy_close_log.calls, 1);
     assert_ptr_equal(proxy_close_log.proxy[0], FAKE_PROXY);
-    assert_int_equal(proxy_close_log.epollfd[0], -1);
 }
 
 /* The happy path, mostly here to prove the failure tests above are failing for
@@ -696,8 +694,6 @@ static void handle_accept_passes_peer_address_to_the_proxy(void **state) {
     will_return(__wrap_SSL_set_accept_state, NULL);
     // No create_proxy mock: the real one runs, and needs a backend socket.
     will_return(__wrap_socket, BACKEND_FD);
-    will_return(__wrap_fcntl, 0);
-    will_return(__wrap_fcntl, 0);
     will_return(__wrap_connect, 0);
     will_return(__wrap_proxy_add_to_epoll, TPX_SUCCESS);
 
@@ -1068,9 +1064,7 @@ int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup(handle_accept_reports_accept_failure,
                                reset_recorders),
-        cmocka_unit_test_setup(handle_accept_closes_fd_when_getfl_fails,
-                               reset_recorders),
-        cmocka_unit_test_setup(handle_accept_closes_fd_when_setfl_fails,
+        cmocka_unit_test_setup(handle_accept_asks_for_a_nonblocking_descriptor,
                                reset_recorders),
         cmocka_unit_test_setup(handle_accept_closes_fd_when_ssl_new_fails,
                                reset_recorders),

@@ -26,7 +26,7 @@ list(APPEND TEST_FLAGS   "-Wl,--wrap=connect -Wl,--wrap=socket -Wl,--wrap=fcntl 
 list(APPEND TEST_COMP    " ")
 
 list(APPEND TEST_TARGETS test_listen)
-list(APPEND TEST_FLAGS   "-Wl,--wrap=create_proxy -Wl,--wrap=proxy_close -Wl,--wrap=proxy_add_to_epoll -Wl,--wrap=accept -Wl,--wrap=fcntl -Wl,--wrap=SSL_new -Wl,--wrap=SSL_free -Wl,--wrap=SSL_set_accept_state -Wl,--wrap=SSL_set_fd -Wl,--wrap=errx -Wl,--wrap=err -Wl,--wrap=socket -Wl,--wrap=setsockopt -Wl,--wrap=listen -Wl,--wrap=malloc -Wl,--wrap=close -Wl,--wrap=connect -Wl,--wrap=getaddrinfo -Wl,--wrap=log_proxy")
+list(APPEND TEST_FLAGS   "-Wl,--wrap=create_proxy -Wl,--wrap=proxy_close -Wl,--wrap=proxy_add_to_epoll -Wl,--wrap=accept4 -Wl,--wrap=fcntl -Wl,--wrap=SSL_new -Wl,--wrap=SSL_free -Wl,--wrap=SSL_set_accept_state -Wl,--wrap=SSL_set_fd -Wl,--wrap=errx -Wl,--wrap=err -Wl,--wrap=socket -Wl,--wrap=setsockopt -Wl,--wrap=listen -Wl,--wrap=malloc -Wl,--wrap=close -Wl,--wrap=connect -Wl,--wrap=getaddrinfo -Wl,--wrap=log_proxy")
 list(APPEND TEST_COMP    " ")
 
 list(APPEND TEST_TARGETS test_logging)
