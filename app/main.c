@@ -639,7 +639,12 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
                | SSL_OP_CIPHER_SERVER_PREFERENCE;
     
     SSL_CTX_set_options(ctx, opts);
+    // Make sure OpenSSL buffers get released for idle connections, saves RAM
     SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
+
+    // For now we set the number of tickets to 1, we'll make this configurable
+    // later on (issue #44)
+    SSL_CTX_set_num_tickets(ctx, 1);
 
     if (config->cacerts != NULL) {
         if (load_servcert(config, ctx, logfd) == 0)
