@@ -1,5 +1,5 @@
-run              20260809T162206Z
-tlsproxy_sha     6e847f2
+run              20260811T063718Z
+tlsproxy_sha     9b38c8f
 mode             bulk
 axis             64 1024 8192 65536 1048576
 backend          backend-echo
@@ -25,7 +25,7 @@ net.core.rmem_max                16777216
 net.core.wmem_max                16777216
 net.core.netdev_max_backlog      16384
 net.netfilter.nf_conntrack_max   1048576
-net.netfilter.nf_conntrack_count 22
+net.netfilter.nf_conntrack_count 8
 net.netfilter.nf_conntrack_tcp_timeout_time_wait 30
 nofile soft/hard                 4096/4096
 fs.nr_open                       1048576
@@ -47,6 +47,10 @@ build-host Linux 6.18.41-gentoo-dist x86_64, g++ (Gentoo 15.3.0 p8) 15.3.0
 tls-perf   min GLIBC_2.38, needs libssl.so.3 libcrypto.so.3 libstdc++.so.6 libm.so.6 libgcc_s.so.1 libc.so.6 
 wrk        min GLIBC_2.38, needs libm.so.6 libcrypto.so.3 libssl.so.3 libgcc_s.so.1 libc.so.6 
 tlsload    min GLIBC_2.38, needs libssl.so.3 libcrypto.so.3 libm.so.6 libc.so.6 
+--- subject worker counts ---
+nworkers: 8
+worker_processes     8;
+    nbthread 8
 --- subject images ---
 nginx:bench            debian 13 libssl3=3.5.6-1~deb13u2
 haproxy:3.2.22         debian 13 libssl3=3.5.6-1~deb13u2

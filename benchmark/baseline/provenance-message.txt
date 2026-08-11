@@ -1,16 +1,18 @@
-run              20260811T055837Z
+run              20260811T064341Z
 tlsproxy_sha     9b38c8f
-mode             handshake
-axis             64 256 1024 4096
-backend          backend-sink
+mode             message
+axis             1000 5000 20000
+backend          backend-echo
 subject_ip       10.99.0.1
 generator        root@10.99.0.2
 group            X25519
 cipher           TLS_AES_256_GCM_SHA384
 tls_version      1.3
 resumption       0
-duration_s       10
-reps             6
+msg_interval_ms  1000
+msg_lockstep     0
+duration_s       30
+reps             3
 threads          4
 --- subject host ---
 role                             subject
@@ -24,7 +26,7 @@ net.core.rmem_max                16777216
 net.core.wmem_max                16777216
 net.core.netdev_max_backlog      16384
 net.netfilter.nf_conntrack_max   1048576
-net.netfilter.nf_conntrack_count 28
+net.netfilter.nf_conntrack_count 202
 net.netfilter.nf_conntrack_tcp_timeout_time_wait 30
 nofile soft/hard                 4096/4096
 fs.nr_open                       1048576
