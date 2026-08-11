@@ -224,6 +224,13 @@ int bind_listen_sock(listen_t *l, const char *host,
                            "Couldn't enable tcp keepcnt on listen socket",
                            TPX_ERR_ERRNO);
 
+        opt = 1;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                       &opt, sizeof(opt)) == -1)
+            log_system_err(LL_WARN,
+                           "Couldn't enable tcp nodelay on listen socket",
+                           TPX_ERR_ERRNO);
+
         opt = 0;
         if (lp->ai_family == AF_INET6 && setsockopt(fd, IPPROTO_IPV6,
                                                     IPV6_V6ONLY, &opt,

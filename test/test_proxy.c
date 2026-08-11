@@ -551,13 +551,36 @@ static void create_connect_configures_keepalive_on_the_backend(void **state) {
     assert_false(was_closed(50));
 }
 
+/* Nagle on the backend leg costs the same delayed-ACK stall as on the client
+   leg, so both are turned off and each is asserted on its own: the two calls
+   are in different files and one can be added without the other, which reads
+   as "latency is fixed" while half the path still coalesces.
+
+   Unlike the client leg, this one cannot ride on the listening socket, because
+   the kernel only clones options onto sockets it accepts and this one is
+   connecting outwards. */
+static void create_connect_disables_nagle_on_the_backend(void **state) {
+    (void)state;
+    proxy_t p;
+    memset(&p, 0, sizeof(p));
+    p.listener = make_listener();
+
+    will_return(__wrap_socket, 50);
+    will_return(__wrap_fcntl, 0);
+    will_return(__wrap_fcntl, 0);
+
+    assert_int_equal(create_connect(&p, 60, 10, 3), 50);
+    assert_true(opt_set_to(IPPROTO_TCP, TCP_NODELAY, 1));
+    assert_false(was_closed(50));
+}
+
 /* Keepalive tuning is a refinement, not a precondition. A kernel that refuses
    TCP_KEEPIDLE leaves a connection that still works and still has keepalive,
    just on the tcp_keepalive_* sysctl defaults instead. Failing the connection
    would convert a rejected tuning knob into a dropped client, so the socket is
    handed back and only the failure is logged.
 
-   The mock queue is armed for all four options, not just the failing one:
+   The mock queue is armed for all five options, not just the failing one:
    arming only the second would make the first call consume it and the test
    would be measuring a refused SO_KEEPALIVE while claiming otherwise. */
 static void create_connect_survives_a_refused_keepalive_option(void **state) {
@@ -573,6 +596,7 @@ static void create_connect_survives_a_refused_keepalive_option(void **state) {
     will_return(__wrap_setsockopt, -1);     // TCP_KEEPIDLE refused
     will_return(__wrap_setsockopt, 0);      // TCP_KEEPINTVL
     will_return(__wrap_setsockopt, 0);      // TCP_KEEPCNT
+    will_return(__wrap_setsockopt, 0);      // TCP_NODELAY
 
     assert_int_equal(create_connect(&p, 60, 10, 3), 50);
     assert_false(was_closed(50));
@@ -1661,6 +1685,9 @@ int main(void) {
                                reset_recorders),
         cmocka_unit_test_setup(create_connect_closes_socket_when_setfl_fails,
                                reset_recorders),
+        cmocka_unit_test_setup(
+            create_connect_disables_nagle_on_the_backend,
+            reset_recorders),
         cmocka_unit_test_setup(
             create_connect_configures_keepalive_on_the_backend,
             reset_recorders),
