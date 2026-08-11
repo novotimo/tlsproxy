@@ -539,6 +539,19 @@ It pins the generator to `6,7,14,15`, off the subject's cpuset. The subject
 takes `0-3,8-11`, four whole physical cores with their siblings, and the
 backend `4,5,12,13`.
 
+**All three subjects run eight workers, one per logical CPU in that cpuset,
+changed from four on 2026-08-11.** `cpu0`'s sibling is `cpu8`, so the cpuset is
+eight logical CPUs and four workers could never occupy more than half of it;
+measured on `-m handshake -x 1024`, tlsproxy went from 7369 handshakes a second
+at four workers to 9657 at eight, and back down to 8277 at sixteen, where there
+is nothing left to overlap. CPU per handshake rises with worker count, 502 to
+766 us across that sweep, because two hyperthreads on one core do not do twice
+the work; that is expected and is why the two figures have to be read together.
+`baseline/` was taken at four workers, so `--against baseline/` compares across
+that change and the handshake and rate columns are not comparable until it is
+retaken. Every subject moved together, so the three-way comparison is unaffected.
+The counts are recorded in `provenance.txt` per run.
+
 To compare a later run against the reference numbers:
 
 ```sh
@@ -556,6 +569,7 @@ the underlying column goes up or down.
 | `README.md` | this file, the method |
 | `bench.sh` | the entry point for all five modes, writing provenance and the git SHA into every result |
 | `report.py` | renders a results directory as markdown; `--against baseline/` adds deltas |
+| `profile.sh` | CPU profiles of all three subjects on one host as one user, so `perf` can attach: `perf stat`, a flamegraph and syscall counts per subject. Not a substitute for `bench.sh`; its numbers only compare with other runs of itself |
 | `BASELINE.md` | the reference numbers as a report, with the caveats that stop them being a published result |
 | `baseline/` | the CSVs and provenance behind it at `6e847f2`, tracked so a later run has something to diff against |
 | `results/` | one directory per run, untracked |

@@ -152,6 +152,10 @@ wait_ready() {
     $SSH -n "$GEN" "IFACE=$GEN_IFACE sh /root/tune.sh generator --show" || true
     echo "--- generators ---"
     cat generators/build/PROVENANCE
+    echo "--- subject worker counts ---"
+    grep -h "^nworkers:" subjects/tlsproxy/tlsproxy.yml
+    grep -h "worker_processes" subjects/nginx/stream/nginx.conf
+    grep -h "nbthread" subjects/haproxy/tcp/haproxy.cfg
     echo "--- subject images ---"
     for i in nginx:bench haproxy:3.2.22 tlsproxy:bench-deb; do
         printf '%-22s ' "$i"

@@ -55,8 +55,8 @@ dkms.conf
 *.dwo
 
 
-# Build dir
-/build/
+# Build dirs, including the RelWithDebInfo one benchmark/profile.sh documents
+/build*/
 
 compile_commands.json
 inc/version.h

@@ -1,7 +1,12 @@
 ## An absent logfile disables the logger, which is the logging-off setting all
 ## three subjects run under for the headline. Groups, ciphersuites and the
 ## version range are not configurable here (#44), so the client pins them.
-nworkers: 4
+##
+## One worker per logical CPU in the cpuset, which is eight: compose.yml pins
+## 0-3,8-11 and cpu0's sibling is cpu8. At four, half the cpuset sat idle and
+## the sweep measured 7369 handshakes a second against 9657 at eight. All three
+## subjects moved together, so the comparison stays level.
+nworkers: 8
 
 listeners:
   - name: bench
