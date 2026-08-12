@@ -12,8 +12,10 @@ listeners:
     listen-ip: 0.0.0.0
     listen-port: 8443
 
+    ## Intermediates only, since the root is no use to a client that doesn't
+    ## already have it and redundant for one that does, and one certificate
+    ## per file, since we read the first in each and stop
     cacerts:
-      - /etc/tlsproxy/cacert.pem
       - /etc/tlsproxy/intcert.pem
     servcert: /etc/tlsproxy/servcert.pem
     servkey: /etc/tlsproxy/servkey.pem

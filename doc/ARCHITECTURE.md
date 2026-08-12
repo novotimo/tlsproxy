@@ -89,19 +89,27 @@ connect-timeout: 5
 listen-ip: 0.0.0.0
 listen-port: 8443
 
-## The certificate chain offered to clients
+## The certificate chain offered to clients. List the intermediates between
+## servcert and the root, one certificate per file since we read the first in
+## each and stop, and leave the root out: a client that doesn't already trust
+## it gains nothing from a copy, and one that does has it already. A cacert
+## that isn't in the path upwards from servcert is warned about and left out
+## of what we send.
 cacerts:
-- cacert.pem
 - intcert.pem
 servcert: servcert.pem
 servkey: servkey.pem
 #servkeypass: test
 
-## Alternatively, provide all certs (including server cert) in a single file:
+## Alternatively, provide the server certificate and the intermediates above
+## it in a single file, leaf first and each issuer after the certificate it
+## signed, stopping one short of the root. That file is sent as written:
 # cert-chain: chain.pem
 # servkey: servkey.pem
 # servkeypass: test
 ## cacerts and servcert can't be used together with cert-chain.
+## A self-signed server certificate goes in cert-chain on its own, which
+## nothing treats as an error, since we verify none of this.
 
 ## If we implement mTLS:
 # trusted-certs:
@@ -156,6 +164,12 @@ The important decision regarding the proxy context (`proxy_t` in `inc/proxy.h`) 
 
 The listener context just contains the listen socket and the peer address, used for connecting new sockets to the remote host once we accept a new connection. Basically, when a listener accepts a connection, it starts a new pending connection to the peer address. This is stored here so that we can easily support listening on multiple sockets and forwarding to different backend servers. Used with `SO_REUSEPORT`, this could also achieve load balancing: create two listen sockets both on the same port, but pointing to different backends, and the kernel will load balance for us.
 
+### Certificates
+
+`build_chain()` in `app/main.c` decides what a listener offers, and the two config forms reach it differently. A `cert-chain` file is read straight through with `PEM_read_bio_X509()`: the first certificate becomes the leaf and the rest become the chain in the order the file has them, so that path sends what the operator wrote and neither sorts nor drops anything. Non-certificate PEM blocks are skipped by OpenSSL's own reader, so a file that also carries the private key works. With `cacerts` the leaf comes from `servcert` and the listed files are candidates: we start at the leaf and repeatedly take the first candidate for which `X509_check_issued()` says it issued the certificate we are holding, removing it from the candidates as we go so that a cross-certified pair cannot make the walk run forever. What is left over never joined the chain, so it is named in a `WARN` on stderr and in the log, and it is not sent. Each `cacerts` file gives us one certificate and one only, since `load_cacerts()` reads the first and closes the file: a bundle holding several contributes its first and nothing else, and the ones after it are never read, so nothing warns about them either. Splitting a bundle up is the operator's job, and `example/default.yml` says so.
+
+Both forms then hand the leaf to `SSL_CTX_use_certificate()`, the key to `SSL_CTX_use_PrivateKey()`, which is where a key that does not belong to the leaf is caught, and the chain to `SSL_CTX_set0_chain()`, which applies the security level to every CA in it. Nothing verifies the result, deliberately for now: we do not build a path against a trust store, check signatures, or look at expiry, since the operator's own chain has no reason to verify against a store we never populate, and #89 has the reporting that would replace it. A self-signed leaf is therefore an ordinary configuration rather than an error, which is what makes a proxy with no CA at all possible; what a client makes of it stays the client's decision.
+
 
 ## Log messages
 
@@ -197,7 +211,7 @@ This is called whenever the configuration file is (re)loaded. It will contain th
 - `certchain`: (Optional) The cert chain file.
 - `cacerts`: (Optional) A list of CA certificate files separated by ':'.
 - `servcert`: (Optional) The server certificate file.
-- `servkey`: The server certificate file.
+- `servkey`: The server private key file.
 
 ### Cert Loaded Event
 

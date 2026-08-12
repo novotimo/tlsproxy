@@ -47,11 +47,35 @@ listeners:
     listen-ip: 0.0.0.0
     listen-port: 8443
 
-    ## The certificate chain offered to clients
+    ## The certificate chain offered to clients. Nothing here is verified:
+    ## we don't build a path against a trust store, check a signature or look
+    ## at an expiry date, so a chain with a gap in it starts and fails at the
+    ## client instead. The one check is OpenSSL's, that servkey belongs to
+    ## the certificate we're serving, and that one refuses to start.
+    ##
+    ## servcert is the server's own certificate and cacerts holds the
+    ## intermediates above it. We work upwards from servcert, taking the
+    ## listed certificate whose subject matches the issuer we're looking for,
+    ## so the order of the list doesn't matter, and anything left over is
+    ## named in a warning and not sent.
+    ##
+    ## Two things to know before writing the list. One file, one certificate:
+    ## we read the first certificate in each of these files and stop there, so
+    ## a bundle holding several has to be split up first, and since the ones
+    ## after the first are never read, nothing warns that they were skipped.
+    ## And leave the root out, since a client that doesn't already trust it
+    ## has no use for a copy and one that does has it already, so sending it
+    ## costs a certificate's worth of handshake and buys nothing. The root is
+    ## on the path upwards, so if you do list it, it goes out.
+    ##
     ## If all you have is a self-signed server certificate, put it in
-    ## cert-chain instead of servcert, and leave servcert empty
+    ## cert-chain instead of servcert, and leave servcert and cacerts empty.
+    ## That is a supported way to run: the certificate goes out on its own
+    ## and the client decides what to make of it, which for openssl s_client
+    ## is "18 (self-signed certificate)" unless it has been given the same
+    ## file. Listing that certificate in cacerts as well sends it twice,
+    ## since it is its own issuer.
     cacerts:
-      - cacert.pem
       - intcert.pem
     servcert: servcert.pem
     ## Anything group or other can read, write or execute here draws a warning
@@ -73,7 +97,14 @@ listeners:
   #   listen-ip: 0.0.0.0
   #   listen-port: 8443
 
-  #   ## The certificate chain offered to clients
+  #   ## The certificate chain offered to clients, as one file holding the
+  #   ## server certificate first, then its issuer, then that certificate's
+  #   ## issuer, and so on, stopping one short of the root. We send the file
+  #   ## as written rather than sorting it, so a file out of order reaches
+  #   ## the client out of order, a root left in is sent for no benefit, and
+  #   ## an unrelated certificate in there is sent too. A file whose first
+  #   ## certificate isn't the server's own is caught only when servkey then
+  #   ## doesn't match it, which is a refusal to start.
   #   cert-chain: chain.pem
   #   servkey: servkey.pem
 
@@ -87,6 +118,6 @@ listeners:
   #   listen-ip: 0.0.0.0
   #   listen-port: 42023
 
-  #   ## The certificate chain offered to clients
+  #   ## Leaf first, then each issuer in turn, stopping before the root
   #   cert-chain: chain.pem
   #   servkey: servkey.pem

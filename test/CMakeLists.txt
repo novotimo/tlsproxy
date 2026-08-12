@@ -64,11 +64,14 @@ add_test(NAME integration_signals
                  ${TLSProxy_SOURCE_DIR}/example)
 set_tests_properties(integration_signals PROPERTIES TIMEOUT 60)
 
+# This one makes its own certificate rather than taking one from example/,
+# which has no self-signed leaf with a key beside it, so it needs openssl(1)
+# and reports 77 when it cannot find it.
 add_test(NAME integration_selfsigned
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/selfsigned.sh
-                 $<TARGET_FILE:tlsproxy>
-                 ${TLSProxy_SOURCE_DIR}/example)
-set_tests_properties(integration_selfsigned PROPERTIES TIMEOUT 60)
+                 $<TARGET_FILE:tlsproxy>)
+set_tests_properties(integration_selfsigned PROPERTIES TIMEOUT 60
+                     SKIP_RETURN_CODE 77)
 
 add_test(NAME integration_pid1
          COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/integration/pid1.sh
