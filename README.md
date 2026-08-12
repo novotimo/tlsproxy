@@ -98,6 +98,25 @@ beside it. Every timeout is in seconds.
 `nworkers` wants to be the number of hardware threads you are giving it. Half
 that leaves half the machine idle, and measurably so.
 
+What a listener sends is the server certificate and the intermediates above it,
+with the root left out, since a client that doesn't already trust the root gains
+nothing from a copy of it and one that does has it already. Named individually
+in `cacerts` the intermediates are put in order for you and anything not on the
+path up from `servcert` draws a warning and stays behind. One certificate per
+file there, since we read the first one in each and stop, so a bundle needs
+splitting up before it goes in the list and nothing will tell you if it didn't.
+Given instead as one `cert-chain` file they go out as written, leaf first and
+each issuer after the certificate it signed, since that path sends the file
+rather than sorting it.
+
+Nothing verifies any of that. No path is built against a trust store, no
+signature is checked and no expiry is looked at, so a chain with a link missing
+starts here and is refused at the client instead. The one check at startup is
+OpenSSL's, that `servkey` belongs to the certificate being served, and it is a
+refusal to start. A self-signed certificate on its own in `cert-chain` is
+therefore an ordinary configuration rather than a special case, and is how to
+run this without a CA at all.
+
 **`SIGHUP` reloads the configuration.** The master re-reads and re-validates the
 file, and only then tells the workers to cycle, so a file with a bad port, an
 `nworkers` of zero, a `tcp-keep*` above what the kernel accepts, or a

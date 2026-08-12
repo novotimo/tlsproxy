@@ -3,9 +3,11 @@
 # leaf signed by it. All three subjects serve the same two-certificate chain,
 # so the handshake carries the same bytes whichever one is under test.
 #
-# A lone self-signed leaf is not usable here: SSL_CTX_build_cert_chain()
-# returns 2 for one, and app/main.c:init_openssl() treats anything but 1 as
-# fatal, so tlsproxy will not start with one in cert-chain.
+# That second certificate is the CA itself, so this is the one place we put a
+# root in a chain, against the advice in example/default.yml. The CSVs in
+# benchmark/baseline/ were measured against these bytes, and taking a
+# certificate out of the handshake would leave every later run incomparable
+# with them.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

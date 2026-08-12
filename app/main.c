@@ -4,6 +4,7 @@
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/epoll.h>
@@ -70,9 +71,12 @@ void init_shmem(void);
 int init_logger(tpx_config_t *config);
 
 SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd);
-int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
-int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
+X509 *load_servcert(const tpx_listen_conf_t *config, int logfd);
+STACK_OF(X509) *load_cacerts(const tpx_listen_conf_t *config, int logfd);
+int load_chain_file(const tpx_listen_conf_t *config, int logfd,
+                    STACK_OF(X509) **ca_certs, X509 **leaf);
 int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
+int build_chain(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd);
 
 int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids);
 
@@ -628,9 +632,8 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
 
     // TODO: make the ciphersuites and accepted TLS versions configurable
     if (!SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION)) {
-        SSL_CTX_free(ctx);
         _fatal(logfd, "Couldn't set minimum TLS protocol version", TPX_ERR_OSSL);
-        return NULL;
+        goto cleanup_fail;
     }
 
     uint64_t opts =
@@ -646,43 +649,10 @@ SSL_CTX *init_openssl(const tpx_listen_conf_t *config, int logfd) {
     // later on (issue #44)
     SSL_CTX_set_num_tickets(ctx, 1);
 
-    if (config->cacerts != NULL) {
-        if (load_servcert(config, ctx, logfd) == 0)
-            goto cleanup_fail;
-        if (load_cacerts(config, ctx, logfd) == 0)
-            goto cleanup_fail;
-    } else if (config->cert_chain != NULL) {
-        if (SSL_CTX_use_certificate_chain_file(ctx, config->cert_chain) != 1) {
-            _fatal(logfd, "Couldn't load cert chain", TPX_ERR_OSSL);
-            goto cleanup_fail;
-        }
-
-        STACK_OF(X509) *certs;
-        SSL_CTX_get0_chain_certs(ctx, &certs);
-        for (int i=0; i<sk_X509_num(certs); ++i)
-            log_cert_load(logfd, LL_INFO, sk_X509_value(certs, i), 0);
-    } else {
-        _fatal(logfd, "Config contains neither cert-chain nor cacerts",
-               TPX_ERR_PLAIN);
+    if (build_chain(config, ctx, logfd) == 0) {
+        _fatal(logfd, "Couldn't load cert chain", TPX_ERR_PLAIN);
         goto cleanup_fail;
     }
-
-    int flags = config->cacerts == NULL
-                    ? SSL_BUILD_CHAIN_FLAG_UNTRUSTED |
-                      SSL_BUILD_CHAIN_FLAG_IGNORE_ERROR
-                    : 0;
-
-    int chain_ret = SSL_CTX_build_cert_chain(ctx, flags);
-    if (chain_ret == 0) {
-        _fatal(logfd, "Failed to build cert chain", TPX_ERR_OSSL);
-        goto cleanup_fail;
-    } else if (chain_ret == 2) {
-        // This is what happens if we built a cert chain with ignored errors
-        log_system_err_m_ex(logfd, LL_WARN, "Building cert chain", "Ignored cert errors");
-    }
-
-    if (load_servkey(config, ctx, logfd) == 0)
-        goto cleanup_fail;
 
     // No mTLS
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
@@ -695,12 +665,12 @@ cleanup_fail:
 }
 
 /** @brief Load the server certificate into the SSL_CTX */
-int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
+X509 *load_servcert(const tpx_listen_conf_t *config, int logfd) {
     BIO *leaf_bio = BIO_new_file(config->servcert, "r");
     if (leaf_bio == NULL)
     {
         _fatal(logfd, "Failed to open server cert file", TPX_ERR_OSSL);
-        return 0;
+        return NULL;
     }
 
     X509 *leaf = NULL;
@@ -708,48 +678,106 @@ int load_servcert(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
         BIO_free(leaf_bio);
         X509_free(leaf);
         _fatal(logfd, "Failed to load server cert", TPX_ERR_OSSL);
-        return 0;
+        return NULL;
     }
 
     BIO_free(leaf_bio);
     log_cert_load(logfd, LL_INFO, leaf, 0);
 
-    if (SSL_CTX_use_certificate(ctx, leaf) != 1) {
-        X509_free(leaf);
-        _fatal(logfd, "Failed to add server certificate to CTX", TPX_ERR_OSSL);
-        return 0;
-    }
-
-    // We can "free" leaf here because it's refcounted, and we lose our ref
-    X509_free(leaf);
-    return 1;
+    return leaf;
 }
 
-/** @brief Load the CA certificates into the SSL_CTX */
-int load_cacerts(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
-    X509_STORE *store = X509_STORE_new();
-    if (store == NULL) {
-        _fatal(logfd, "Couldn't allocate X509 store", TPX_ERR_OSSL);
-        return 0;
+/** @brief Load the CA certificates into a stack
+ *
+ *  @param[in]  config   The configuration information
+ *  @param[in]  logfd    The fd which receives log messages
+ *  @return 1 for success, 0 for failure
+ **/
+STACK_OF(X509) *load_cacerts(const tpx_listen_conf_t *config, int logfd) {
+    STACK_OF(X509) *ca_certs = sk_X509_new_null();
+
+    for (size_t i=0; i<config->cacerts_count; ++i) {
+        BIO *bio = BIO_new_file(config->cacerts[i], "rb");
+        if (!bio) {
+            _fatal(logfd, "Couldn't allocate BIO", TPX_ERR_OSSL);
+            goto cleanup;
+        }
+
+        X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+        BIO_free(bio);
+        if (!cert) {
+            _fatal(logfd, "Couldn't load cert file", TPX_ERR_OSSL);
+            goto cleanup;
+        }
+
+        if (sk_X509_push(ca_certs, cert) == 0) {
+            _fatal(logfd, "Couldn't push cert to stack", TPX_ERR_OSSL);
+            X509_free(cert);
+            goto cleanup;
+        }
+
+        log_cert_load(logfd, LL_INFO, cert, 0);
     }
 
-    X509_LOOKUP *lookup = X509_STORE_add_lookup(store, X509_LOOKUP_file());
-    for (size_t i=0; i<config->cacerts_count; ++i) {
-        if (!X509_LOOKUP_load_file(lookup, config->cacerts[i],
-                                   X509_FILETYPE_PEM)) {
-            X509_STORE_free(store);
-            _fatal(logfd, "Couldn't load CA certificate", TPX_ERR_OSSL);
-            return 0;
+    return ca_certs;
+cleanup:
+    sk_X509_pop_free(ca_certs, X509_free);
+    return NULL;
+}
+
+/** @brief Load the CA certificates into a stack
+ *
+ *  @param[in]  config   The configuration information
+ *  @param[in]  logfd    The fd which receives log messages
+ *  @param[out] ca_certs CA certificates will be loaded into here
+ *  @param[out] leaf     The leaf certificate will be loaded into here
+ *  @return 1 for success, 0 for failure. In case of failure, caller doesn't
+ *          need to free ca_certs or leaf
+ **/
+int load_chain_file(const tpx_listen_conf_t *config, int logfd,
+                                STACK_OF(X509) **ca_certs, X509 **leaf) {
+    *ca_certs = sk_X509_new_null();
+    *leaf = NULL;
+
+    int is_leaf = 1;
+
+    BIO *bio = BIO_new_file(config->cert_chain, "rb");
+    X509 *cert = NULL;
+    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != 0) {
+        log_cert_load(logfd, LL_INFO, cert, 0);
+
+        if (is_leaf) {
+            *leaf = cert;
+            is_leaf = 0;
+            continue;
+        }
+
+        if (sk_X509_push(*ca_certs, cert) == 0) {
+            _fatal(logfd, "Couldn't push cert to stack", TPX_ERR_OSSL);
+            X509_free(cert);
+            goto cleanup;
         }
     }
+    BIO_free(bio);
+    bio = NULL;
 
-    SSL_CTX_set_cert_store(ctx, store);
-    
-    STACK_OF(X509) *certs;
-    SSL_CTX_get0_chain_certs(ctx, &certs);
-    for (int i=0; i<sk_X509_num(certs); ++i)
-        log_cert_load(logfd, LL_INFO, sk_X509_value(certs, i), 0);
-    return 1;
+    unsigned long err = ERR_peek_last_error();
+
+    // If we reached EOF, just return success
+    if (ERR_GET_LIB(err) == ERR_LIB_PEM &&
+        ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
+        ERR_clear_error();
+        return 1;
+    } else {
+        goto cleanup;
+    }
+
+cleanup:
+    sk_X509_pop_free(*ca_certs, X509_free);
+    X509_free(*leaf);
+    if (bio)
+        BIO_free(bio);
+    return 0;
 }
 
 /** @brief Load the server private key into the SSL_CTX */
@@ -768,7 +796,7 @@ int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
         _fatal(logfd, "Failed to read server key", TPX_ERR_OSSL);
         return 0;
     }
-    
+
     if (SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
         EVP_PKEY_free(pkey);
         _fatal(logfd, "Failed to load server key into ctx", TPX_ERR_OSSL);
@@ -778,6 +806,128 @@ int load_servkey(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
     // Our pkey is refcounted, so we should relinquish ownership
     EVP_PKEY_free(pkey);
     return 1;
+}
+
+int build_chain(const tpx_listen_conf_t *config, SSL_CTX *ctx, int logfd) {
+    X509 *leaf = NULL;
+    STACK_OF(X509) *ca_certs = NULL;
+    STACK_OF(X509) *chain = NULL;
+
+    if (config->cacerts != NULL) {
+        if ((ca_certs = load_cacerts(config, logfd)) == NULL) {
+            _fatal(logfd, "Couldn't load CA certs", TPX_ERR_PLAIN);
+            goto cleanup;
+        }
+        if ((leaf = load_servcert(config, logfd)) == NULL) {
+            _fatal(logfd, "Couldn't load server cert", TPX_ERR_PLAIN);
+            goto cleanup;
+        }
+
+        // We'll fill the chain ourselves
+        chain = sk_X509_new_null();
+    } else if (config->cert_chain != NULL) {
+        if (!load_chain_file(config, logfd, &ca_certs, &leaf)) {
+            // Can't have these freed, they're guaranteed to be freed already if
+            // load_chain_file returns 0
+            ca_certs = NULL;
+            leaf = NULL;
+            _fatal(logfd, "Couldn't load certificate chain from file",
+                   TPX_ERR_PLAIN);
+            goto cleanup;
+        }
+        chain = ca_certs;
+    } else {
+        _fatal(logfd, "Config contains neither cert-chain nor cacerts",
+               TPX_ERR_PLAIN);
+        goto cleanup;
+    }
+
+    if (SSL_CTX_use_certificate(ctx, leaf) == 0) {
+        _fatal(logfd, "Couldn't insert leaf cert into OpenSSL context",
+               TPX_ERR_OSSL);
+        goto cleanup;
+    }
+
+    if (load_servkey(config, ctx, logfd) == 0) {
+        _fatal(logfd, "Couldn't load server key into OpenSSL context",
+               TPX_ERR_PLAIN);
+        goto cleanup;
+    }
+
+    if (chain != ca_certs) {
+        X509 *cur = leaf;
+        int found;
+        for (;;) {
+            found = 0;
+            for (size_t i=0; i<sk_X509_num(ca_certs); ++i) {
+                X509 *candidate = sk_X509_value(ca_certs, i);
+                if (candidate != cur &&
+                    X509_check_issued(candidate, cur) == X509_V_OK) {
+                    sk_X509_push(chain, candidate);
+
+                    // This is so we can pop free the ca_certs without affecting
+                    // the chain, and so that we don't encounter any loops
+                    sk_X509_delete(ca_certs, i);
+                    cur = candidate;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found)
+                break;
+        }
+
+        // Whatever is left never joined the chain, so we don't send it and
+        // the operator should know which one. A subject name has no length
+        // we can rely on, so the subject is what gets cut and the sentence
+        // around it always survives: "..." plus the tail is what says the
+        // certificate was dropped rather than merely being long
+        #define SUBJ_MAX 256
+        static const char ignored_fmt[] = "Certificate '%.*s%s' isn't in the "
+            "chain we send, so we're ignoring it";
+        char ignored[sizeof(ignored_fmt) + SUBJ_MAX];
+
+        for (int i=0; i<sk_X509_num(ca_certs); ++i) {
+            char *subj = X509_NAME_oneline(
+                    X509_get_subject_name(sk_X509_value(ca_certs, i)), NULL, 0);
+            const char *name = subj == NULL ? "(unreadable subject)" : subj;
+
+            snprintf(ignored, sizeof(ignored), ignored_fmt, SUBJ_MAX, name,
+                     strlen(name) > SUBJ_MAX ? "..." : "");
+            OPENSSL_free(subj);
+
+            log_system_err_m_ex(logfd, LL_WARN, "Certificate isn't in chain",
+                                ignored);
+            fprintf(stderr, "%s\n", ignored);
+        }
+        #undef SUBJ_MAX
+
+        sk_X509_pop_free(ca_certs, X509_free);
+    }
+
+    // In either case, we no longer need the leaf, we've given it to the SSL_CTX
+    X509_free(leaf);
+    // Set them to NULL so they're not double freed
+    leaf = NULL;
+    // If we're using cacerts, this is already free. If we're using the
+    // cert-chain, set this to NULL so that only chain is freed in cleanup
+    ca_certs = NULL;
+
+    if (SSL_CTX_set0_chain(ctx, chain) == 0) {
+        _fatal(logfd, "Couldn't insert cert chain into OpenSSL context",
+               TPX_ERR_OSSL);
+        goto cleanup;
+    }
+
+    return 1;
+
+cleanup:
+    X509_free(leaf);
+
+    sk_X509_pop_free(ca_certs, X509_free);
+    sk_X509_pop_free(chain, X509_free);
+
+    return 0;
 }
 
 int handle_reload(tpx_config_t **config, int *logfd, pid_t **pids) {

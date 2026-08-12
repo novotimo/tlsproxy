@@ -21,7 +21,6 @@ listeners:
 
     ## The certificate chain offered to clients
     cacerts:
-      - cacert.pem
       - intcert.pem
     servcert: servcert.pem
     servkey: servkey.pem

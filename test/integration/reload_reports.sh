@@ -44,7 +44,6 @@ listeners:
     listen-ip: 127.0.0.1
     listen-port: $1
     cacerts:
-      - $CERTS/cacert.pem
       - $CERTS/intcert.pem
     servcert: $CERTS/servcert.pem
     servkey: $2
