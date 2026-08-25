@@ -159,6 +159,25 @@ services:
     ports:
       - "8443:8443"
 
+  ## hitch is the closest architectural comparison to tlsproxy: a master that
+  ## forks N workers, each of which binds its own SO_REUSEPORT listener and
+  ## runs an event loop over both legs of every connection. libev rather than
+  ## epoll directly, and a ring buffer per direction rather than one output
+  ## queue, but the shape is the same.
+  hitch:
+    profiles: [hitch]
+    build:
+      context: ./subjects/hitch
+    image: hitch:bench
+    networks: [bench]
+    <<: *subject-limits
+    sysctls: *subject-sysctls
+    volumes:
+      - ./subjects/hitch/hitch.conf:/etc/hitch/hitch.conf:ro
+      - ./certs/${CERT:-ecdsa}:/etc/certs:ro
+    ports:
+      - "8443:8443"
+
   haproxy-tcp:
     profiles: [haproxy-tcp]
     image: haproxy:3.2.22

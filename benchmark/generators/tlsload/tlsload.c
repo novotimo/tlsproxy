@@ -24,12 +24,14 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -801,5 +803,23 @@ int main(int argc, char **argv) {
         printf("bytes_up=%llu bytes_down=%llu mbytes_per_sec=%.2f\n",
                (unsigned long long)up, (unsigned long long)down,
                (double)(up + down) / secs / 1048576.0);
+
+    // What the generator itself cost. A subject and a generator sharing one
+    // machine cannot both be given the whole of it, so the number that says
+    // whether a result belongs to the subject has to come from the generator
+    // process rather than from /proc/stat, which would count both. Affinity
+    // rather than _SC_NPROCESSORS_ONLN, since taskset and --cpuset-cpus are
+    // how the two are kept apart and neither changes the online count.
+    struct rusage ru;
+    cpu_set_t aff;
+    long ncpu = 1;
+    if (sched_getaffinity(0, sizeof aff, &aff) == 0 && CPU_COUNT(&aff) > 0)
+        ncpu = CPU_COUNT(&aff);
+    if (getrusage(RUSAGE_SELF, &ru) == 0) {
+        double cpu_s = (double)ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6
+                     + (double)ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6;
+        printf("gen_cpu_s=%.2f gen_cpus=%ld gen_busy_pct=%.1f\n",
+               cpu_s, ncpu, 100.0 * cpu_s / (secs * (double)ncpu));
+    }
     return 0;
 }

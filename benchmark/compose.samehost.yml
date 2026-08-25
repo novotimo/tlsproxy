@@ -1,0 +1,74 @@
+## Same-host topology: the generator is a container on the bench network
+## instead of a separate machine. Merge it over compose.yml with
+##
+##   COMPOSE_FILE=compose.yml:compose.samehost.yml GEN=compose ./bench.sh ...
+##
+## Two things make this worth having rather than pointing tlsload at the
+## published port on 127.0.0.1. A published port on loopback is not DNAT: the
+## nat OUTPUT rule docker installs excludes 127.0.0.0/8, so the connection is
+## relayed by docker-proxy in userland and the benchmark would be measuring
+## that. And a container has its own network namespace, so the generator gets
+## a whole ephemeral port range and its own tcp_tw_reuse without touching the
+## host's, which is what the client-closes-first churn tests exhaust.
+##
+## The cost is that the subject no longer has the machine to itself. The CPU
+## split below is the whole of it, and tlsload's gen_busy_pct column is what
+## says whether a given point belongs to the subject or to the generator.
+
+## Each subject drops to two physical cores and four workers, one per logical
+## CPU in the cpuset; lite/README.md has the measurement that says why the
+## subject gets less of the machine than the generator does.
+
+x-lite-subject: &lite-subject
+  cpuset: "0,1,8,9"
+
+services:
+  tlsproxy:
+    <<: *lite-subject
+    volumes:
+      - ./lite/tlsproxy.yml:/etc/tlsproxy/tlsproxy.yml:ro
+  hitch:
+    <<: *lite-subject
+    volumes:
+      - ./lite/hitch.conf:/etc/hitch/hitch.conf:ro
+  nginx-stream:
+    <<: *lite-subject
+    volumes:
+      - ./lite/nginx.conf:/etc/nginx/nginx.conf:ro
+  haproxy-tcp:
+    <<: *lite-subject
+    volumes:
+      - ./lite/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+  ## One physical core rather than two. The sink and the echo backend are a
+  ## few hundred lines of accept-and-discard, and the generator needs the
+  ## core more than they do.
+  backend:
+    cpuset: "2,10"
+  backend-sink:
+    cpuset: "2,10"
+  backend-echo:
+    cpuset: "2,10"
+
+  ## Five physical cores against the subject's two, which is what it takes to
+  ## leave the subject the bottleneck; see lite/README.md.
+  gen:
+    profiles: [gen]
+    build:
+      context: ./generators
+    image: bench-gen:latest
+    networks: [bench]
+    cpuset: "3,4,5,6,7,11,12,13,14,15"
+    mem_limit: 4g
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    sysctls:
+      ## The client sends FIN first in every churn test, so the ephemeral
+      ## range and TIME_WAIT reuse are what cap new connections per second.
+      ## tcp_tw_reuse is 2 on the host, which is loopback only, and this path
+      ## is a bridge rather than loopback.
+      net.ipv4.ip_local_port_range: "1024 65535"
+      net.ipv4.tcp_tw_reuse: "1"
+      net.ipv4.tcp_max_tw_buckets: "2000000"

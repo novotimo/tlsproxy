@@ -13,7 +13,7 @@ import os
 import statistics as st
 import sys
 
-SUBJECTS = ["tlsproxy", "nginx-stream", "haproxy-tcp"]
+SUBJECTS = ["tlsproxy", "hitch", "nginx-stream", "haproxy-tcp"]
 
 
 def load(path):

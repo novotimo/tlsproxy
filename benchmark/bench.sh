@@ -27,6 +27,11 @@ SSH=${SSH:-ssh}
 # GEN=local runs the generator on this host instead, pinned off the subject's
 # cpuset. The bulk test needs it: a gigabit link caps the data path far below
 # what the subjects can do, so across the wire it would measure the NIC.
+#
+# GEN=compose runs it as a container on the bench network, which is what a
+# machine with no second host has to do; see compose.samehost.yml, and set
+# COMPOSE_FILE to pull that in. The subject is addressed by service name
+# rather than by SUBJECT_IP, since the two are on the same bridge.
 GEN_CPUS=${GEN_CPUS:-6,7,14,15}
 GROUP=${GROUP:-X25519}
 CIPHER=${CIPHER:-TLS_AES_256_GCM_SHA384}
@@ -97,7 +102,7 @@ mem_max()  { awk '/^max /{print $2}' "$1/memory.events" 2>/dev/null || echo 0; }
 # against the same subject, because the generator could not service its own
 # connections fast enough to time them accurately.
 gen_stat() {
-    [ "$GEN" = local ] && return 0
+    case $GEN in local|compose) return 0 ;; esac
     $SSH -n "$GEN" 'head -1 /proc/stat' 2>/dev/null || true
 }
 gen_busy() {   # $1 = before, $2 = after
@@ -112,12 +117,16 @@ gen_busy() {   # $1 = before, $2 = after
 # there is no reason to leave any of it idle; a thread-starved generator shows
 # up as subject latency and is very hard to tell apart from the real thing.
 if [ "$threads" -eq 0 ]; then
-    if [ "$GEN" = local ]; then
-        threads=$(echo "$GEN_CPUS" | tr ',' '\n' | awk -F- \
-                  '{ if (NF==2) n+=$2-$1+1; else n+=1 } END { print n }')
-    else
-        threads=$($SSH -n "$GEN" nproc 2>/dev/null || echo 4)
-    fi
+    case $GEN in
+    local)   threads=$(echo "$GEN_CPUS" | tr ',' '\n' | awk -F- \
+                       '{ if (NF==2) n+=$2-$1+1; else n+=1 } END { print n }') ;;
+    # nproc honours sched_getaffinity, so this reads the cpuset out of the
+    # compose file rather than duplicating it here.
+    compose) threads=$($DOCKER compose --profile gen run --rm -T \
+                           --entrypoint nproc gen 2>/dev/null | tr -d '\r') ;;
+    *)       threads=$($SSH -n "$GEN" nproc 2>/dev/null || echo 4) ;;
+    esac
+    [ -n "$threads" ] || threads=4
 fi
 
 sample_mem() {
@@ -167,6 +176,7 @@ wait_ready() {
     echo "subject_ip       $SUBJECT_IP"
     echo "generator        $GEN"
     [ "$GEN" = local ] && echo "generator_cpus   $GEN_CPUS"
+    [ "$GEN" = compose ] && echo "compose_files    ${COMPOSE_FILE:-compose.yml}"
     echo "group            $GROUP"
     echo "cipher           $CIPHER"
     echo "tls_version      $TLSVER"
@@ -179,15 +189,21 @@ wait_ready() {
     echo "--- subject host ---"
     IFACE=$SUBJECT_IFACE sh ./tune.sh subject --show
     echo "--- generator host ---"
-    $SSH -n "$GEN" "IFACE=$GEN_IFACE sh /root/tune.sh generator --show" || true
+    case $GEN in
+    local)   echo "same host, cpuset $GEN_CPUS" ;;
+    compose) echo "container on the bench network, see compose.samehost.yml" ;;
+    *)       $SSH -n "$GEN" "IFACE=$GEN_IFACE sh /root/tune.sh generator --show" \
+                 || true ;;
+    esac
     echo "--- generators ---"
     cat generators/build/PROVENANCE
     echo "--- subject worker counts ---"
     grep -h "^nworkers:" subjects/tlsproxy/tlsproxy.yml
     grep -h "worker_processes" subjects/nginx/stream/nginx.conf
     grep -h "nbthread" subjects/haproxy/tcp/haproxy.cfg
+    grep -h "^workers" subjects/hitch/hitch.conf
     echo "--- subject images ---"
-    for i in nginx:bench haproxy:3.2.22 tlsproxy:bench-deb; do
+    for i in nginx:bench haproxy:3.2.22 tlsproxy:bench-deb hitch:bench; do
         printf '%-22s ' "$i"
         $DOCKER run --rm --entrypoint sh "$i" -c \
             '. /etc/os-release; printf "%s %s libssl3=%s\n" "$ID" "$VERSION_ID" \
@@ -248,6 +264,10 @@ for cert in $certs; do
                         generators/build/tlsload $margs -d $dur -t $threads \
                         -V $TLSVER -G $GROUP -k $CIPHER 127.0.0.1 $PORT" \
                         > "$raw" 2>&1 || true
+                elif [ "$GEN" = compose ]; then
+                    $DOCKER compose --profile gen run --rm -T gen $margs \
+                        -d "$dur" -t "$threads" -V "$TLSVER" -G "$GROUP" \
+                        -k "$CIPHER" "$subj" "$PORT" > "$raw" 2>&1 || true
                 else
                     $SSH -n "$GEN" "ulimit -n 1048576; ./build/tlsload $margs \
                         -d $dur -t $threads -V $TLSVER -G $GROUP -k $CIPHER \
@@ -257,6 +277,12 @@ for cert in $certs; do
                 touch "$out/.done"; wait "$sampler" 2>/dev/null || true
                 post_gen=$(gen_stat)
                 gbusy=$(gen_busy "$pre_gen" "$post_gen")
+                # Sharing the machine means /proc/stat counts the subject too,
+                # so the generator reports its own getrusage instead.
+                case $GEN in local|compose)
+                    gbusy=$(awk -F'gen_busy_pct=' '/gen_busy_pct=/{print $2}' \
+                            "$raw" | tail -1) ;;
+                esac
                 post_cpu=$(cpu_usec "$cg"); post_procs=$(procs "$cg")
                 post_thr=$(throttle);       post_mm=$(mem_max "$cg")
                 set -- $(cat "$out/.mem" 2>/dev/null || echo 0 0 0 0)
